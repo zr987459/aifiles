@@ -73,6 +73,8 @@ import kotlinx.coroutines.channels.Channel
 private const val CONFIRMATION_TIMEOUT_MS = 5L * 60 * 1000
 private const val WIDE_PANES_MIN_WIDTH_DP = 700
 private const val INITIAL_PANE_LAYOUT_TIMEOUT_MS = 1_000L
+/** AI 页打开图片/视频时，滑动列表取当前文件前后各这么多个。 */
+private const val AI_PLAYLIST_HALF = 300
 private const val VOLUME_CHANGE_DEBOUNCE_MS = 300L
 
 private data class PaneInitialLayout(val pane: Int, val treeVersion: Long)
@@ -130,11 +132,72 @@ class MainViewModel : ViewModel() {
         activeCtrl.revealPath(app.local1st.files.core.fs.XId.file(path))
     }
 
-    /** 用应用内查看器 / 外部应用打开该文件。 */
-    fun openPath(path: String) {
-        val fs = app.local1st.files.di.Graph.fsRegistry.forScheme(app.local1st.files.core.fs.XId.SCHEME_FILE)
-        val entry = runCatching { fs.stat(app.local1st.files.core.fs.XId.file(path)) }.getOrNull() ?: return
-        openEntry(activeCtrl, entry)
+    /**
+     * 打开 AI 页面里的文件（绝对路径），不依赖浏览器面板：AI 页的文件通常不在面板列表里。
+     * 图片/视频直接构造查看器请求，[playlist] 里同类的文件作为可左右滑动的列表；
+     * PDF/文本走应用内查看器；其他交给外部应用。stat 都在 IO 线程。
+     */
+    fun openPath(path: String, playlist: List<String> = emptyList()) {
+        viewModelScope.launch {
+            val fs = Graph.fsRegistry.forScheme(XId.SCHEME_FILE)
+            val entry = withContext(Dispatchers.IO) {
+                runCatching { fs.stat(XId.file(path)) }.getOrNull()
+            }
+            if (entry == null) {
+                snackbar.tryEmit(text(R.string.cannot_read, File(path).name))
+                return@launch
+            }
+            if (entry.isDir) {
+                revealInBrowser(path)
+                return@launch
+            }
+            if (refuseVolumeBinSymlink(entry)) return@launch
+            when (val category = FileTypes.categoryOf(entry.name, entry.mime)) {
+                FileCategory.IMAGE, FileCategory.VIDEO -> {
+                    val items = withContext(Dispatchers.IO) { aiPlaylist(entry, path, playlist, category) }
+                    val index = items.indexOfFirst { it.id == entry.id }.coerceAtLeast(0)
+                    openAfterRecover(listOf(entry), entry.name, requiredId = entry.id) {
+                        if (category == FileCategory.IMAGE) {
+                            showViewer(ViewerRequest.Image(items = items, startIndex = index))
+                        } else {
+                            showViewer(ViewerRequest.Media(entry, items))
+                        }
+                    }
+                }
+                FileCategory.PDF -> openAfterRecover(listOf(entry), entry.name) {
+                    showViewer(ViewerRequest.Pdf(entry))
+                }
+                FileCategory.TEXT -> openAfterRecover(listOf(entry), entry.name) {
+                    showViewer(ViewerRequest.Text(entry))
+                }
+                else -> openWith(entry)
+            }
+        }
+    }
+
+    /** 同一列表里与 [entry] 同类的文件（保持列表顺序），最多取它前后各 [AI_PLAYLIST_HALF] 个。IO 线程调用。 */
+    private fun aiPlaylist(
+        entry: XEntry,
+        path: String,
+        playlist: List<String>,
+        category: FileCategory,
+    ): List<XEntry> {
+        if (playlist.isEmpty()) return listOf(entry)
+        val same = playlist.filter { p ->
+            p == path || FileTypes.categoryOf(p.substringAfterLast('/')) == category
+        }.distinct()
+        val at = same.indexOf(path)
+        val window = if (at < 0) {
+            same.take(AI_PLAYLIST_HALF * 2)
+        } else {
+            same.subList((at - AI_PLAYLIST_HALF).coerceAtLeast(0), (at + AI_PLAYLIST_HALF + 1).coerceAtMost(same.size))
+        }
+        val fs = Graph.fsRegistry.forScheme(XId.SCHEME_FILE)
+        val items = window.mapNotNull { p ->
+            if (p == path) entry
+            else runCatching { fs.stat(XId.file(p)) }.getOrNull()?.takeIf { !it.isDir && !isVolumeBinSymlink(it) }
+        }
+        return if (items.any { it.id == entry.id }) items else listOf(entry) + items
     }
 
     private fun showViewer(request: ViewerRequest) {

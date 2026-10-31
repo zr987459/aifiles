@@ -20,6 +20,8 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
@@ -28,6 +30,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
@@ -49,6 +53,7 @@ import app.local1st.files.ui.motion.AppScreenSurface
 import app.local1st.files.ui.motion.AppScreenSwitcher
 import app.local1st.files.ui.motion.DisplayBoundsMargin
 import app.local1st.files.ui.motion.EnteringStartOffset
+import app.local1st.files.ui.motion.WindowPose
 import app.local1st.files.ui.motion.frontPose
 import app.local1st.files.ui.motion.rearPose
 import app.local1st.files.ui.motion.rememberDisplayCornerRadius
@@ -145,9 +150,19 @@ fun AppHost(vm: MainViewModel) {
     val frontPose = switcher.frontPose(widthPx, heightPx, marginPx, enteringOffsetPx, towardEnd)
     val scrim = switcher.scrimAlpha(isDark)
 
+    // 冷启动先显示 AI 首页时，浏览器（栈底）从没组合过：权限门的 onGranted、会话恢复等布局、
+    // 启动遮罩都依赖它和上游一样在启动时就组合。所以在它第一次露面之前，把它隐藏地组合在最底层
+    // （不绘制、不收触摸、无障碍不可见），第一次露面后就恢复“被遮住即离开组合”的原有行为。
+    val root = backStack.firstOrNull()
+    var rootShown by rememberSaveable { mutableStateOf(false) }
+    val rootVisible = root != null && (root.id == front.id || root.id == rear?.id)
+    if (rootVisible && !rootShown) SideEffect { rootShown = true }
+    val keepRootBehind = !rootShown && !rootVisible && root != null && root.screen is AppScreen.Browser
+
     val layers = buildList {
-        if (rear != null) add(rear to rearPose)
-        add(front to frontPose)
+        if (keepRootBehind) add(ScreenLayer(root!!, WindowPose(alpha = 0f), hidden = true))
+        if (rear != null) add(ScreenLayer(rear, rearPose))
+        add(ScreenLayer(front, frontPose))
     }
 
     Box(
@@ -159,19 +174,27 @@ fun AppHost(vm: MainViewModel) {
             }
             .background(MaterialTheme.colorScheme.background),
     ) {
-        layers.forEachIndexed { index, (entry, pose) ->
+        layers.forEach { (entry, pose, hidden) ->
             key(entry.id) {
                 holder.SaveableStateProvider(entry.id) {
-                    AppScreenSurface(
-                        pose = pose,
-                        displayCornerRadius = displayCornerRadius,
-                        mayShowVideo = entry.screen is AppScreen.Viewer,
+                    // 结构在“隐藏 / 后层 / 前层”之间保持不变，切换角色时不会重建页面状态。
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .then(if (hidden) Modifier.clearAndSetSemantics { } else Modifier),
                     ) {
-                        AppScreenBody(vm, entry)
+                        AppScreenSurface(
+                            pose = pose,
+                            displayCornerRadius = displayCornerRadius,
+                            mayShowVideo = entry.screen is AppScreen.Viewer,
+                        ) {
+                            AppScreenBody(vm, entry)
+                        }
+                        if (hidden) HiddenLayerTouchBlocker()
                     }
                 }
             }
-            if (index == 0 && rear != null && scrim > 0.01f) {
+            if (entry.id == rear?.id && scrim > 0.01f) {
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = scrim)))
             }
         }
@@ -183,6 +206,28 @@ fun AppHost(vm: MainViewModel) {
                 .windowInsetsPadding(WindowInsets.navigationBarsStable),
         )
     }
+}
+
+private data class ScreenLayer(
+    val entry: AppScreenEntry,
+    val pose: WindowPose,
+    val hidden: Boolean = false,
+)
+
+/** 吃掉落到隐藏层上的触摸：前层没处理的点击不能穿到看不见的浏览器上。 */
+@Composable
+private fun HiddenLayerTouchBlocker() {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitPointerEvent().changes.forEach { it.consume() }
+                    }
+                }
+            },
+    )
 }
 
 @Composable
@@ -246,6 +291,7 @@ private fun aiNav(vm: MainViewModel, entry: AppScreenEntry) = app.local1st.files
     back = { vm.navigateBack(entry.id) },
     openFile = { vm.openPath(it) },
     reveal = { vm.revealInBrowser(it) },
+    openFiles = { paths, index -> paths.getOrNull(index)?.let { vm.openPath(it, paths) } },
 )
 
 

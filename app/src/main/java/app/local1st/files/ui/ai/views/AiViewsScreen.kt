@@ -620,7 +620,7 @@ private fun FileListMode(
                             items(s.data, key = { it.path }) { f ->
                                 FileGridCell(
                                     f, selected = f.path in selected, selecting = selecting,
-                                    onClick = { if (selecting) toggle(f.path) else nav.openFile(f.path) },
+                                    onClick = { if (selecting) toggle(f.path) else nav.openInList(s.data, f.path) },
                                     onSelect = { toggle(f.path) },
                                     onReveal = { nav.reveal(f.path) },
                                 )
@@ -634,7 +634,7 @@ private fun FileListMode(
                             items(s.data, key = { it.path }) { f ->
                                 FileRow(
                                     f, selected = f.path in selected, selecting = selecting,
-                                    onClick = { if (selecting) toggle(f.path) else nav.openFile(f.path) },
+                                    onClick = { if (selecting) toggle(f.path) else nav.openInList(s.data, f.path) },
                                     onSelect = { toggle(f.path) },
                                     onReveal = { nav.reveal(f.path) },
                                 )
@@ -724,6 +724,12 @@ private fun buildMovePlan(files: List<IndexedFile>, destDir: String): Plan = Pla
 )
 
 // ---------------------------------------------------------------- 文件单元
+
+/** 点开列表里的一个文件：整列表传给查看器，图片/视频可左右滑动到同列表的同类文件。 */
+private fun AiNav.openInList(list: List<IndexedFile>, path: String) {
+    val paths = list.map { it.path }
+    openFiles(paths, paths.indexOf(path).coerceAtLeast(0))
+}
 
 private fun isVisual(f: IndexedFile) =
     f.category == Category.IMAGE || f.category == Category.SCREENSHOT || f.category == Category.VIDEO

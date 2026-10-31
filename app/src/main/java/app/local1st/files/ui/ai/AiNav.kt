@@ -12,4 +12,6 @@ class AiNav(
     val openFile: (String) -> Unit,
     /** 回到浏览器并定位到该文件。 */
     val reveal: (String) -> Unit,
+    /** 打开列表里第 index 个文件；图片/视频可在同列表的同类文件间左右滑动。 */
+    val openFiles: (List<String>, Int) -> Unit = { paths, index -> paths.getOrNull(index)?.let(openFile) },
 )

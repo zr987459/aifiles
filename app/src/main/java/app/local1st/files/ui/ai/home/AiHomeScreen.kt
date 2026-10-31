@@ -94,8 +94,11 @@ import app.local1st.files.ai.Risk
 import app.local1st.files.ui.ai.AiNav
 import app.local1st.files.ui.components.TooltipIconButton
 import app.local1st.files.ui.main.AppScreen
+import app.local1st.files.ui.main.hasStorageAccess
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -125,10 +128,22 @@ fun AiHomeScreen(nav: AiNav) {
     var actionMessage by remember { mutableStateOf<String?>(null) }
     var interrupted by remember { mutableStateOf<List<PlanRecord>>(emptyList()) }
 
+    val context = LocalContext.current
+    var storageGranted by remember { mutableStateOf(hasStorageAccess(context)) }
+    LifecycleResumeEffect(Unit) {
+        val now = hasStorageAccess(context)
+        // 刚从系统设置授权回来：立即补一次扫描
+        if (now && !storageGranted) safeLaunchScan(scope)
+        storageGranted = now
+        onPauseOrDispose { }
+    }
+
     // 进入页面：从未扫描过就自动扫描；查一下有没有被中断的计划
     LaunchedEffect(Unit) {
+        // 索引在后台线程从磁盘读出上次扫描时间，稍等一下再判断，避免把“还没读到”当成“从未扫描”
+        delay(600)
         val s = AiGraph.index.stats.value
-        if (s.lastScanAt == 0L && !s.scanning) {
+        if (s.lastScanAt == 0L && !s.scanning && hasStorageAccess(context)) {
             safeIo { AiGraph.index.startScan(false) }
         }
         interrupted = safeIo { AiGraph.executor.interrupted() }.getOrDefault(emptyList())
@@ -156,7 +171,9 @@ fun AiHomeScreen(nav: AiNav) {
                 IntentAction.FIND -> Result.success(
                     AppScreen.AiViews(query = intent.query, title = intentTitle(intent)),
                 )
-                IntentAction.CLEAN, IntentAction.TRASH -> safeIo {
+                IntentAction.CLEAN, IntentAction.TRASH -> if (!hasCondition(intent.query)) {
+                    Result.failure(IllegalArgumentException("条件太宽，请说清楚位置、类型、时间或大小"))
+                } else safeIo {
                     val files = AiGraph.index.query(intent.query)
                     if (files.isEmpty()) null
                     else AppScreen.AiPlanReview(
@@ -173,6 +190,8 @@ fun AiHomeScreen(nav: AiNav) {
                                     size = f.size,
                                     reason = "符合指令：" + intent.raw,
                                     risk = Risk.CONFIRM,
+                                    // 解析不确定时默认不勾选，让用户逐个确认
+                                    selected = !intent.uncertain,
                                 )
                             },
                         ),
@@ -189,7 +208,10 @@ fun AiHomeScreen(nav: AiNav) {
                     if (screen == null) actionMessage = "没有找到符合条件的文件"
                     else nav.open(screen)
                 },
-                onFailure = { actionMessage = "出错了：" + (it.message ?: it.javaClass.simpleName) },
+                onFailure = {
+                    actionMessage = if (it is IllegalArgumentException) it.message
+                    else "出错了：" + (it.message ?: it.javaClass.simpleName)
+                },
             )
         }
     }
@@ -221,6 +243,9 @@ fun AiHomeScreen(nav: AiNav) {
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                if (!storageGranted) {
+                    PermissionBanner { nav.open(AppScreen.AiSettings) }
+                }
                 if (interrupted.isNotEmpty()) {
                     InterruptedBanner(interrupted.size) { nav.open(AppScreen.AiHistory) }
                 }
@@ -563,7 +588,32 @@ private fun InterruptedBanner(count: Int, onOpen: () -> Unit) {
     }
 }
 
+@Composable
+private fun PermissionBanner(onOpen: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+    ) {
+        Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "没有“所有文件访问”权限，无法扫描文件",
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onOpen) { Text("去授权") }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 工具
+
+/** 删除类指令至少要有一个限定条件，避免“删掉”这类空指令把整个索引都列进计划。 */
+private fun hasCondition(q: app.local1st.files.ai.FileQuery): Boolean =
+    !q.text.isNullOrBlank() || q.categories.isNotEmpty() || q.subCategory != null || q.sourceApp != null ||
+        !q.pathPrefix.isNullOrBlank() || q.exts.isNotEmpty() || q.minSize != null || q.maxSize != null ||
+        q.olderThanMs != null || q.newerThanMs != null
 
 private fun intentTitle(intent: CommandIntent): String =
     intent.chips.joinToString(" · ").ifBlank { intent.raw }.take(40)

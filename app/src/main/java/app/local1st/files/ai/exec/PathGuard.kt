@@ -80,6 +80,7 @@ internal object PathGuard {
         // a.db-journal 这类 ext() 拿不全
         if (lower.endsWith(".db-journal") || lower.endsWith(".db-wal") || lower.endsWith(".db-shm")) return true
         if (lower.endsWith("~")) return true
+        if (lower.contains("备份")) return true
         return false
     }
 
@@ -94,7 +95,7 @@ internal object PathGuard {
         val lower = segs.map { it.lowercase() }
         if (TrashPaths.isUnderTrash(path) || lower.any { it == ".xfiles-trash" }) return "回收站内部的文件不能直接操作"
         if (asSource && lower.size == 1 && lower[0] in STANDARD_TOP) return "系统标准目录不能移动或删除"
-        if (lower.any { it in PROTECTED_SEGMENTS }) return "应用数据库、备份或 Git 目录受保护"
+        if (lower.any { it in PROTECTED_SEGMENTS || it.contains("备份") }) return "应用数据库、备份或 Git 目录受保护"
         if (asSource && isProtectedFileName(segs.last())) return "数据库、密钥、证书或备份文件受保护"
         val mm = lower.indexOf("micromsg")
         if (mm >= 0) {

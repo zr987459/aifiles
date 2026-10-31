@@ -6,6 +6,7 @@ import android.os.StatFs
 import android.util.Log
 import app.local1st.files.ai.ActionType
 import app.local1st.files.ai.AiGraph
+import app.local1st.files.ai.Risk
 import app.local1st.files.ai.ExecProgress
 import app.local1st.files.ai.FileIndex
 import app.local1st.files.ai.Plan
@@ -84,6 +85,9 @@ class DefaultPlanExecutor(private val context: Context) : PlanExecutor {
             val blocking = ArrayList<String>()
             val notes = ArrayList<String>()
             var fixed = a
+
+            // 风险为 KEEP（规则或 AI 判定建议保留）的动作一律不执行，作为界面/计划生成之外的最后一道防线
+            if (a.risk == Risk.KEEP) blocking += "已标为建议保留，不执行"
 
             // ---- 源
             var src: String? = null

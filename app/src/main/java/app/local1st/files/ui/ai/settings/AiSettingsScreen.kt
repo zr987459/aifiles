@@ -74,8 +74,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.ShizukuProvider
 
-private const val UI_PREFS = "ai_settings_ui"
-private const val KEY_CLOUD_INTRO_SHOWN = "cloud_intro_shown"
 
 private sealed interface RulesUi {
     data object Loading : RulesUi
@@ -83,7 +81,7 @@ private sealed interface RulesUi {
     data class Loaded(val rules: List<OrganizeRule>) : RulesUi
 }
 
-/** AI 设置：云端 AI、隐私、整理规则、权限与覆盖范围。 */
+/** AI 设置：快速开通 AI、隐私、整理规则、权限与覆盖范围。 */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun AiSettingsScreen(nav: AiNav) {
@@ -102,30 +100,6 @@ fun AiSettingsScreen(nav: AiNav) {
             } catch (e: Throwable) {
                 toast(context, "保存失败：" + (e.message ?: e.javaClass.simpleName))
             }
-        }
-    }
-
-    // ---- 云端 AI ----
-    var showCloudIntro by rememberSaveable { mutableStateOf(false) }
-    var baseUrl by rememberSaveable(settings.baseUrl) { mutableStateOf(settings.baseUrl) }
-    var model by rememberSaveable(settings.model) { mutableStateOf(settings.model) }
-    var limitText by rememberSaveable(settings.dailyRequestLimit) {
-        mutableStateOf(settings.dailyRequestLimit.toString())
-    }
-    var apiKey by remember { mutableStateOf("") }
-    var keyMessage by remember { mutableStateOf<String?>(null) }
-    var testing by remember { mutableStateOf(false) }
-    var testResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
-    var requestsToday by remember { mutableStateOf<Int?>(null) }
-    var requestsKey by remember { mutableStateOf(0) }
-
-    LaunchedEffect(requestsKey) {
-        requestsToday = try {
-            withContext(Dispatchers.IO) { llm.requestsToday() }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            null
         }
     }
 
@@ -197,166 +171,8 @@ fun AiSettingsScreen(nav: AiNav) {
                     .padding(padding)
                     .padding(horizontal = 16.dp),
             ) {
-                // ================= 云端 AI =================
-                SectionHeader("云端 AI")
-                SwitchRow(
-                    title = "使用云端 AI",
-                    subtitle = "关闭时所有功能只在本机用规则完成",
-                    checked = settings.enabled,
-                    onCheckedChange = { on ->
-                        if (on && !introShown(context)) {
-                            showCloudIntro = true
-                        } else {
-                            updateSettings { it.copy(enabled = on) }
-                        }
-                    },
-                )
-                if (settings.enabled) {
-                    FieldWithSave(
-                        label = "接口地址",
-                        value = baseUrl,
-                        onValueChange = { baseUrl = it },
-                        changed = baseUrl.trim() != settings.baseUrl,
-                        keyboardType = KeyboardType.Uri,
-                        onSave = {
-                            val v = baseUrl.trim().trimEnd('/')
-                            if (!v.startsWith("http://") && !v.startsWith("https://")) {
-                                toast(context, "接口地址要以 http:// 或 https:// 开头")
-                            } else {
-                                updateSettings { s -> s.copy(baseUrl = v) }
-                            }
-                        },
-                    )
-                    FieldWithSave(
-                        label = "模型名",
-                        value = model,
-                        onValueChange = { model = it },
-                        changed = model.trim() != settings.model,
-                        onSave = {
-                            val v = model.trim()
-                            if (v.isEmpty()) toast(context, "模型名不能为空")
-                            else updateSettings { s -> s.copy(model = v) }
-                        },
-                    )
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedTextField(
-                            value = apiKey,
-                            onValueChange = {
-                                apiKey = it
-                                keyMessage = null
-                            },
-                            label = { Text(if (settings.hasKey) "API Key（已保存，输入可替换）" else "API Key") },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            modifier = Modifier.weight(1f),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(
-                            enabled = apiKey.isNotBlank(),
-                            onClick = {
-                                val key = apiKey.trim()
-                                scope.launch {
-                                    keyMessage = try {
-                                        withContext(Dispatchers.IO) { llm.setApiKey(key) }
-                                        apiKey = ""
-                                        "已保存"
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Throwable) {
-                                        "保存失败：" + (e.message ?: e.javaClass.simpleName)
-                                    }
-                                }
-                            },
-                        ) { Text("保存") }
-                    }
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            keyMessage ?: if (settings.hasKey) "已保存" else "未设置 API Key",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (settings.hasKey) {
-                            TextButton(onClick = {
-                                scope.launch {
-                                    keyMessage = try {
-                                        withContext(Dispatchers.IO) { llm.setApiKey(null) }
-                                        "已清除"
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Throwable) {
-                                        "清除失败：" + (e.message ?: e.javaClass.simpleName)
-                                    }
-                                }
-                            }) { Text("清除 Key") }
-                        }
-                    }
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedButton(
-                            enabled = !testing,
-                            onClick = {
-                                testing = true
-                                testResult = null
-                                scope.launch {
-                                    testResult = try {
-                                        val r = withContext(Dispatchers.IO) { llm.test() }
-                                        r.fold(
-                                            onSuccess = { true to (it.ifBlank { "连接成功" }) },
-                                            onFailure = { false to (it.message ?: "连接失败") },
-                                        )
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Throwable) {
-                                        false to (e.message ?: e.javaClass.simpleName)
-                                    }
-                                    testing = false
-                                    requestsKey++
-                                }
-                            },
-                        ) { Text("测试连接") }
-                        Spacer(Modifier.width(12.dp))
-                        if (testing) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            testResult?.let { (ok, msg) ->
-                                Text(
-                                    (if (ok) "✓ " else "✗ ") + msg,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                    maxLines = 3,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    }
-                    FieldWithSave(
-                        label = "每日请求上限",
-                        value = limitText,
-                        onValueChange = { limitText = it.filter(Char::isDigit).take(6) },
-                        changed = limitText != settings.dailyRequestLimit.toString(),
-                        keyboardType = KeyboardType.Number,
-                        onSave = {
-                            val v = limitText.toIntOrNull()
-                            if (v == null || v <= 0) toast(context, "请输入大于 0 的数字")
-                            else updateSettings { s -> s.copy(dailyRequestLimit = v) }
-                        },
-                    )
-                    Text(
-                        "今日请求：${requestsToday?.toString() ?: "—"} / ${settings.dailyRequestLimit}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-                    )
-                }
+                // ================= 快速开通 AI =================
+                AiQuickSetup(settings)
 
                 // ================= 隐私 =================
                 SectionHeader("隐私")
@@ -531,30 +347,6 @@ fun AiSettingsScreen(nav: AiNav) {
         }
     }
 
-    if (showCloudIntro) {
-        AlertDialog(
-            onDismissRequest = { showCloudIntro = false },
-            title = { Text("开启云端 AI 前请了解") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("• 默认只发送文件名、类型、大小、时间、所在文件夹等信息，不发送文件内容。")
-                    Text("• 只有你在「隐私」里打开「允许发送内容摘要」后，才会发送截图文字或文档开头片段。")
-                    Text("• 证件、银行等敏感文件名，以及你排除的文件夹，永远不会发送。")
-                    Text("• AI 只给建议；移动、删除都要你预览确认，删除只进回收站，可整批撤销。")
-                    Text("• 请求发往你填写的接口地址，费用按该服务商计算。")
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showCloudIntro = false
-                    markIntroShown(context)
-                    updateSettings { it.copy(enabled = true) }
-                }) { Text("我知道了，开启") }
-            },
-            dismissButton = { TextButton(onClick = { showCloudIntro = false }) { Text("暂不开启") } },
-        )
-    }
-
     deleteRule?.let { rule ->
         AlertDialog(
             onDismissRequest = { deleteRule = null },
@@ -615,7 +407,7 @@ private fun RuleCard(
 }
 
 @Composable
-private fun FieldWithSave(
+internal fun FieldWithSave(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,
@@ -641,7 +433,7 @@ private fun FieldWithSave(
 }
 
 @Composable
-private fun Hint(text: String) {
+internal fun Hint(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.bodySmall,
@@ -651,7 +443,7 @@ private fun Hint(text: String) {
 }
 
 @Composable
-private fun SectionHeader(text: String) {
+internal fun SectionHeader(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.titleSmall,
@@ -661,7 +453,7 @@ private fun SectionHeader(text: String) {
 }
 
 @Composable
-private fun SwitchRow(
+internal fun SwitchRow(
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
@@ -702,14 +494,6 @@ private fun normalizePath(raw: String): String {
     return p
 }
 
-private fun introShown(context: Context): Boolean =
-    context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CLOUD_INTRO_SHOWN, false)
-
-private fun markIntroShown(context: Context) {
-    context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE)
-        .edit().putBoolean(KEY_CLOUD_INTRO_SHOWN, true).apply()
-}
-
 private fun requestAllFilesAccess(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
     val intent = Intent(
@@ -735,6 +519,6 @@ private fun openShizuku(context: Context) {
     if (!launched) toast(context, "没有找到 Shizuku，请先安装")
 }
 
-private fun toast(context: Context, text: String) {
+internal fun toast(context: Context, text: String) {
     Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 }

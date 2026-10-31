@@ -44,5 +44,6 @@ object ExternalOpenRegistry {
     }
 
     private fun component(context: Context, kind: ExternalOpenKind): ComponentName =
-        ComponentName(context.packageName, "${context.packageName}.${kind.aliasName}")
+        // 别名类名按 namespace（app.local1st.files）声明，与 applicationId 无关。
+        ComponentName(context.packageName, "app.local1st.files.${kind.aliasName}")
 }

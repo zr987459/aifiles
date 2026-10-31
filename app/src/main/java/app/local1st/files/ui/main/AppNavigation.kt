@@ -45,9 +45,11 @@ class AppScreenEntry internal constructor(
  * into route strings. The browser is the root and cannot be popped.
  */
 internal class AppNavigationState {
-    private var nextId = 1L
+    private var nextId = 2L
     val backStack: SnapshotStateList<AppScreenEntry> = mutableStateListOf(
         AppScreenEntry(id = 0L, screen = AppScreen.Browser),
+        // AI 首页是启动页；返回进入文件浏览器。
+        AppScreenEntry(id = 1L, screen = AppScreen.AiHome),
     )
 
     fun navigate(screen: AppScreen, replaceTop: Boolean = false): AppScreenEntry {

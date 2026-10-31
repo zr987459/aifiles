@@ -98,8 +98,39 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.material3.CircularProgressIndicator
+import app.local1st.files.ai.IndexStats
 
 private const val DEFAULT_ORGANIZE_DIR = "/storage/emulated/0/Documents/AI整理"
+
+/** 每页条数：先显示前 60 个，滚到底再加载下一页。 */
+private const val PAGE_SIZE = 60
+
+/** 扫描进行中时自动刷新的间隔。 */
+private const val SCAN_REFRESH_MS = 3000L
+
+/** 只按一级分类筛选（没有其他条件）时，返回这些分类；否则 null。 */
+private fun pureCategories(q: FileQuery): Set<Category>? =
+    q.categories.takeIf {
+        it.isNotEmpty() && q.text.isNullOrBlank() && q.subCategory == null && q.sourceApp == null &&
+            q.pathPrefix == null && q.exts.isEmpty() && q.minSize == null && q.maxSize == null &&
+            q.olderThanMs == null && q.newerThanMs == null
+    }
+
+/** 用索引统计里的真实总数（不受 limit 截断）。 */
+private fun statTotal(stats: IndexStats, cats: Set<Category>): Pair<Int, Long> {
+    var n = 0
+    var b = 0L
+    cats.forEach { c -> stats.byCategory[c]?.let { n += it.count; b += it.bytes } }
+    return n to b
+}
 
 private sealed interface LoadState<out T> {
     data object Loading : LoadState<Nothing>
@@ -175,6 +206,7 @@ fun AiViewsScreen(nav: AiNav, viewKey: String?, query: FileQuery?, title: String
             else -> FileListMode(
                 nav = nav,
                 title = screenTitle,
+                viewKey = viewKey,
                 baseQuery = q,
                 reloadTick = reloadTick,
                 llmReady = llmReady,
@@ -244,7 +276,14 @@ private fun SmartViewsMode(
 ) {
     val stats by AiGraph.index.stats.collectAsState()
     var state by remember { mutableStateOf<LoadState<List<SmartView>>>(LoadState.Loading) }
-    LaunchedEffect(reloadTick, stats.lastScanAt) {
+    var autoTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(stats.scanning) {
+        while (stats.scanning) {
+            delay(SCAN_REFRESH_MS)
+            autoTick++
+        }
+    }
+    LaunchedEffect(reloadTick, stats.lastScanAt, autoTick) {
         if (state !is LoadState.Ready) state = LoadState.Loading
         state = try {
             LoadState.Ready(withContext(Dispatchers.IO) { AiGraph.organizer.smartViews() })
@@ -274,7 +313,7 @@ private fun SmartViewsMode(
                 if (stats.scanning) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text(
-                        stats.scanProgress.ifBlank { "正在扫描文件…" },
+                        "正在索引，已找到 ${stats.totalFiles} 个",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
@@ -365,6 +404,7 @@ private fun initialSortOption(q: FileQuery): SortOption = when (q.sort) {
 private fun FileListMode(
     nav: AiNav,
     title: String,
+    viewKey: String?,
     baseQuery: FileQuery,
     reloadTick: Int,
     llmReady: Boolean,
@@ -378,15 +418,38 @@ private fun FileListMode(
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showMoveDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(baseQuery, sortOpt, reloadTick, localTick) {
-        state = LoadState.Loading
-        state = try {
-            val effective = baseQuery.copy(sort = sortOpt.sort)
-            LoadState.Ready(withContext(Dispatchers.IO) { AiGraph.index.query(effective) })
+    val stats by AiGraph.index.stats.collectAsState()
+    var limit by remember(baseQuery, sortOpt) { mutableIntStateOf(PAGE_SIZE) }
+    var hasMore by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var autoTick by remember { mutableIntStateOf(0) }
+    var viewTotal by remember(viewKey) { mutableStateOf<Pair<Int, Long>?>(null) }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+
+    // 扫描还在进行：每隔几秒自动刷新（保留已显示的内容，不闪加载圈）。
+    LaunchedEffect(stats.scanning) {
+        while (stats.scanning) {
+            delay(SCAN_REFRESH_MS)
+            autoTick++
+        }
+    }
+
+    LaunchedEffect(baseQuery, sortOpt, reloadTick, localTick, limit, autoTick, stats.lastScanAt) {
+        val first = state !is LoadState.Ready
+        if (first) state = LoadState.Loading else loadingMore = true
+        try {
+            val want = limit
+            val effective = baseQuery.copy(sort = sortOpt.sort, limit = want)
+            val list = withContext(Dispatchers.IO) { AiGraph.index.query(effective) }
+            hasMore = list.size >= want
+            state = LoadState.Ready(list)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            LoadState.Failed(e.zhMessage())
+            if (first) state = LoadState.Failed(e.zhMessage())
+        } finally {
+            loadingMore = false
         }
         // 去掉已不在结果里的选择。
         (state as? LoadState.Ready)?.data?.let { list ->
@@ -395,7 +458,41 @@ private fun FileListMode(
         }
     }
 
+    // 非纯分类视图：用 smartViews 里该视图的真实数量。
+    val pure = remember(baseQuery) { pureCategories(baseQuery) }
+    LaunchedEffect(viewKey, pure, stats.lastScanAt, autoTick) {
+        if (pure != null || viewKey == null) return@LaunchedEffect
+        viewTotal = try {
+            withContext(Dispatchers.IO) { AiGraph.organizer.smartViews() }
+                .firstOrNull { it.key == viewKey }?.let { it.count to it.bytes }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            viewTotal
+        }
+    }
+
+    // 滚到接近底部时加载下一页。
+    LaunchedEffect(listState, gridState) {
+        snapshotFlow {
+            val nearEnd = if (grid) {
+                val li = gridState.layoutInfo
+                li.totalItemsCount > 0 && (li.visibleItemsInfo.lastOrNull()?.index ?: 0) >= li.totalItemsCount - 1 - 12
+            } else {
+                val li = listState.layoutInfo
+                li.totalItemsCount > 0 && (li.visibleItemsInfo.lastOrNull()?.index ?: 0) >= li.totalItemsCount - 1 - 8
+            }
+            nearEnd && hasMore && !loadingMore
+        }.distinctUntilChanged().filter { it }.collect { limit += PAGE_SIZE }
+    }
+
     val files = (state as? LoadState.Ready)?.data.orEmpty()
+    val total: Pair<Int, Long>? = when {
+        pure != null -> statTotal(stats, pure).takeIf { it.first > 0 || !hasMore }
+        viewTotal != null -> viewTotal
+        !hasMore -> files.size to files.sumOf { it.size }
+        else -> null
+    }?.let { t -> if (t.first < files.size) files.size to files.sumOf { it.size } else t }
     val selecting = selected.isNotEmpty()
     val selectedFiles = files.filter { it.path in selected }
 
@@ -486,13 +583,22 @@ private fun FileListMode(
                     Spacer(Modifier.weight(1f))
                     if (files.isNotEmpty()) {
                         Text(
-                            "${files.size} 个 · ${formatBytes(files.sumOf { it.size })}",
+                            total?.let { "${it.first} 个 · ${formatBytes(it.second)}" } ?: "已加载 ${files.size} 个",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
                 HorizontalDivider()
+                if (stats.scanning) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(
+                        "正在索引，已找到 ${total?.first ?: stats.totalFiles} 个",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    )
+                }
                 when (val s = state) {
                     LoadState.Loading -> AiLoading()
                     is LoadState.Failed -> AiMessage(
@@ -500,10 +606,12 @@ private fun FileListMode(
                         actionLabel = "重试", onAction = { localTick++ },
                     )
                     is LoadState.Ready -> if (s.data.isEmpty()) {
-                        AiMessage(Icons.Outlined.FolderOpen, "这里还没有文件", "索引里没有符合条件的文件。")
+                        if (stats.scanning) AiLoading("正在索引，已找到 ${stats.totalFiles} 个")
+                        else AiMessage(Icons.Outlined.FolderOpen, "这里还没有文件", "索引里没有符合条件的文件。")
                     } else if (grid) {
                         LazyVerticalGrid(
-                            columns = GridCells.Adaptive(104.dp),
+                            columns = GridCells.Fixed(3),
+                            state = gridState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(8.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -517,9 +625,12 @@ private fun FileListMode(
                                     onReveal = { nav.reveal(f.path) },
                                 )
                             }
+                            if (hasMore) {
+                                item(key = "more", span = { GridItemSpan(maxLineSpan) }) { LoadMoreFooter() }
+                            }
                         }
                     } else {
-                        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+                        LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
                             items(s.data, key = { it.path }) { f ->
                                 FileRow(
                                     f, selected = f.path in selected, selecting = selecting,
@@ -528,6 +639,7 @@ private fun FileListMode(
                                     onReveal = { nav.reveal(f.path) },
                                 )
                             }
+                            if (hasMore) item(key = "more") { LoadMoreFooter() }
                         }
                     }
                 }
@@ -616,35 +728,16 @@ private fun buildMovePlan(files: List<IndexedFile>, destDir: String): Plan = Pla
 private fun isVisual(f: IndexedFile) =
     f.category == Category.IMAGE || f.category == Category.SCREENSHOT || f.category == Category.VIDEO
 
-private fun thumbModel(f: IndexedFile): Any? = when (f.category) {
-    Category.IMAGE, Category.SCREENSHOT -> File(f.path)
-    Category.VIDEO -> VideoThumb(path = f.path, mtime = f.mtime, size = f.size)
-    else -> null
-}
-
-private fun fallbackIcon(f: IndexedFile) = when (f.category) {
-    Category.IMAGE, Category.SCREENSHOT -> Icons.Outlined.Image
-    Category.VIDEO -> Icons.Outlined.Movie
-    else -> Icons.AutoMirrored.Outlined.InsertDriveFile
+@Composable
+private fun LoadMoreFooter() {
+    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+    }
 }
 
 @Composable
-private fun Thumb(f: IndexedFile, modifier: Modifier) {
-    Box(
-        modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(fallbackIcon(f), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        val model = remember(f.path, f.mtime) { thumbModel(f) }
-        if (model != null) {
-            AsyncImage(
-                model = model,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-    }
+private fun Thumb(f: IndexedFile, modifier: Modifier, iconSize: androidx.compose.ui.unit.Dp = 24.dp) {
+    AiFileThumb(path = f.path, mtime = f.mtime, size = f.size, mime = f.mime, modifier = modifier, iconSize = iconSize)
 }
 
 @Composable
@@ -696,7 +789,21 @@ private fun FileGridCell(
                 .combinedClickableCompat(onClick = onClick, onLongClick = { menu = true }),
         ) {
             Box {
-                Thumb(f, Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(12.dp)))
+                Thumb(f, Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(12.dp)), iconSize = 36.dp)
+                if (!isVisual(f)) {
+                    Text(
+                        f.name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                    )
+                }
                 if (selecting) {
                     Box(
                         Modifier
@@ -710,15 +817,6 @@ private fun FileGridCell(
                         modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(22.dp),
                     )
                 }
-            }
-            if (!isVisual(f)) {
-                Text(
-                    f.name,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                )
             }
         }
         FileMenu(expanded = menu, onDismiss = { menu = false }, selected = selected, onSelect = onSelect, onReveal = onReveal)

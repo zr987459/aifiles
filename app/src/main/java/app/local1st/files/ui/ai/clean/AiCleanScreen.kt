@@ -90,6 +90,7 @@ import app.local1st.files.ai.ExecProgress
 import app.local1st.files.ai.Risk
 import app.local1st.files.core.thumb.PrivFile
 import app.local1st.files.core.thumb.VideoThumb
+import app.local1st.files.ui.ai.views.AiFileThumb
 import app.local1st.files.core.util.Format
 import app.local1st.files.ui.ai.AiNav
 import app.local1st.files.ui.components.TooltipIconButton
@@ -721,37 +722,14 @@ private fun iconFor(item: CleanItem): ImageVector = when {
 
 @Composable
 private fun Thumb(item: CleanItem, modifier: Modifier) {
-    var loaded by remember(item.path) { mutableStateOf(false) }
-    val model = remember(item.path, item.mtime, item.size) { thumbModel(item) }
-    Box(
-        modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (!loaded) {
-            Icon(iconFor(item), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(28.dp))
-        }
-        if (model != null) {
-            AsyncImage(
-                model = model,
-                contentDescription = item.path.substringAfterLast('/'),
-                contentScale = ContentScale.Crop,
-                onState = { loaded = it is AsyncImagePainter.State.Success },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-        if (isVideo(item) && loaded) {
-            Box(
-                Modifier
-                    .size(22.dp)
-                    .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(11.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
-            }
-        }
-    }
+    // 与浏览器列表、智能分类页同一套缩略图加载（视频帧、图片、APK 图标、特权通道）。
+    AiFileThumb(
+        path = item.path,
+        mtime = item.mtime,
+        size = item.size,
+        isDir = item.isDir,
+        modifier = modifier.clip(RoundedCornerShape(10.dp)),
+    )
 }
 
 @Composable

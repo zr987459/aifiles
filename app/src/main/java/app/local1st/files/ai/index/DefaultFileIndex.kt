@@ -1,10 +1,8 @@
 package app.local1st.files.ai.index
 
-import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
-import android.os.SystemClock
 import android.util.Log
 import android.webkit.MimeTypeMap
 import app.local1st.files.ai.AiGraph
@@ -22,19 +20,34 @@ import app.local1st.files.core.fs.XId
 import app.local1st.files.di.Graph
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Paths
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 文件索引（M2）。SQLite + FTS4，后台扫描所有已挂载卷，增量维护。
+ * 文件索引（M2 / P1 提速）。
+ *
+ * 扫描：普通目录用 java.io.File.list + 一次 lstat（nio）读元数据；只有 File 读不了的目录
+ * （Android/data 下，或 list() 返回 null）才走 Graph.fsRegistry 的特权通道（Shizuku）。
+ * 每个卷的顶层目录分给 4 个协程并行，库里旧记录一次性读进内存比对，变化的才写，
+ * 每 2000 条一个事务；第一遍只写元数据和分类，不读文件内容、不算哈希。
  * 所有数据库与文件 I/O 都在 Dispatchers.IO。
  */
 class DefaultFileIndex(private val context: Context) : FileIndex {
@@ -50,6 +63,9 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
     @Volatile
     private var scanJob: Job? = null
 
+    /** 串行化批量写（SQLite 本身也会串行，这里保证一个事务里只有一批）。 */
+    private val writeLock = Any()
+
     init {
         Graph.appScope.launch(Dispatchers.IO) {
             runCatching {
@@ -60,7 +76,7 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         }
     }
 
-    // ------------------------------------------------------------------ 扫描
+    // ================================================================== 扫描
 
     override fun startScan(full: Boolean) {
         synchronized(scanLock) {
@@ -77,139 +93,355 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         }
     }
 
-    private class ScanCtx(
-        val fs: XFileSystem,
-        val gen: Long,
-        val full: Boolean,
-        val writer: BatchWriter,
-        val alive: () -> Boolean,
-    ) {
-        var files = 0
-        var lastProgressAt = 0L
-        var lastStatsAt = 0L
+    private class OldRow(val id: Long, val size: Long, val mtime: Long, val manual: Boolean) {
+        @Volatile var seen = false
     }
 
-    /** 阻塞执行，不能挂起（SQLite 事务绑定线程）。 */
-    private fun runScan(full: Boolean, alive: () -> Boolean) {
+    private class OldDir(val mtime: Long, val empty: Boolean) {
+        @Volatile var seen = false
+    }
+
+    private class FileRow(
+        val path: String, val parent: String, val name: String, val ext: String,
+        val size: Long, val mtime: Long, val mime: String?,
+        /** 库里已有的行；null 表示新文件。 */
+        val oldId: Long,
+        /** null：手动分类，保留原分类只更新元数据。 */
+        val cls: Classification?,
+    )
+
+    private class DirRow(val path: String, val mtime: Long, val empty: Boolean)
+
+    /** 一次扫描（或一次 onAdded 目录）的共享状态。 */
+    private class Session(
+        val fs: XFileSystem,
+        val full: Boolean,
+        val alive: () -> Boolean,
+        val files: Map<String, OldRow>,
+        val dirs: Map<String, OldDir>,
+    ) {
+        val counter = AtomicInteger()
+        @Volatile var current = ""
+        /** 列不出的目录：其下旧记录保留。 */
+        val failed = ConcurrentLinkedQueue<String>()
+    }
+
+    /** 每个协程自己的写缓冲。 */
+    private class Buf {
+        val files = ArrayList<FileRow>(BATCH)
+        val dirs = ArrayList<DirRow>()
+        val size get() = files.size + dirs.size
+    }
+
+    private suspend fun runScan(full: Boolean, alive: () -> Boolean) {
+        val started = System.currentTimeMillis()
         val fs = Graph.fsRegistry.forScheme(XId.SCHEME_FILE)
-        val gen = System.currentTimeMillis()
         val volumes = runCatching { Graph.roots.currentMountedVolumes() }.getOrDefault(emptyList())
-        publishStats(scanning = true, progress = "准备扫描…")
-        val writer = BatchWriter(db)
-        val ctx = ScanCtx(fs, gen, full, writer, alive)
+        _stats.update { it.copy(scanning = true, scanProgress = "准备扫描…") }
+        val s = Session(fs, full, alive, loadFiles(null), loadDirs(null))
+
+        // 顶层任务：每个卷根下的目录；卷根下的文件当场处理
+        val tasks = ConcurrentLinkedQueue<Pair<String, Long>>()
+        val rootBuf = Buf()
         for (v in volumes) {
             if (!alive()) break
-            val root = fs.stat(XId.file(v.path)) ?: XEntry(id = XId.file(v.path), name = v.label, isDir = true)
-            walk(ctx, root, isVolumeRoot = true)
+            val root = v.path.trimEnd('/').ifEmpty { "/" }
+            val subdirs = processDir(s, root, File(root).lastModified(), rootBuf, isVolumeRoot = true)
+            tasks.addAll(subdirs)
         }
-        writer.flush()
+        flush(rootBuf)
+
+        coroutineScope {
+            val ticker = launch {
+                var n = 0
+                while (isActive) {
+                    delay(STATS_INTERVAL_MS)
+                    val text = "已扫描 ${s.counter.get()} 个文件 · ${s.current}"
+                    // 分类计数每 ~1.5 秒查一次库，其余只更新进度文字
+                    if (++n % 5 == 0) publishStats(scanning = true, progress = text)
+                    else _stats.update { it.copy(scanning = true, scanProgress = text) }
+                }
+            }
+            val workers = List(PARALLEL) {
+                launch(Dispatchers.IO) {
+                    val buf = Buf()
+                    while (alive()) {
+                        val (dir, mtime) = tasks.poll() ?: break
+                        walkTree(s, dir, mtime, buf)
+                    }
+                    flush(buf)
+                }
+            }
+            workers.forEach { it.join() }
+            ticker.cancel()
+        }
+
         if (!alive()) {
             publishStats(scanning = false, progress = "扫描已取消")
             return
         }
-        // 删掉这次没见到的（已不存在 / 卷已卸载）
-        db.beginTransaction()
-        try {
-            db.execSQL("DELETE FROM files WHERE seen < ?", arrayOf<Any>(gen))
-            db.execSQL("DELETE FROM dirs WHERE seen < ?", arrayOf<Any>(gen))
-            db.execSQL("DELETE FROM files_fts WHERE docid NOT IN (SELECT id FROM files)")
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-        computeQuickHashes(alive)
+        _stats.update { it.copy(scanning = true, scanProgress = "整理索引…") }
+        deleteUnseen(s)
         val now = System.currentTimeMillis()
         prefs.edit().putLong(KEY_LAST_SCAN, now).apply()
+        Log.i(TAG, "scan done: ${s.counter.get()} files in ${now - started} ms")
         publishStats(scanning = false, progress = "", lastScanAt = now)
     }
 
-    /** 迭代遍历一个卷（显式栈，避免深目录爆栈）。 */
-    private fun walk(ctx: ScanCtx, root: XEntry, isVolumeRoot: Boolean) {
-        val stack = ArrayDeque<Pair<XEntry, Int>>()
-        stack.addLast(root to 0)
-        var first = isVolumeRoot
+    /** 深度优先走完一棵子树（显式栈），阻塞执行。 */
+    private fun walkTree(s: Session, rootDir: String, rootMtime: Long, buf: Buf) {
+        val stack = ArrayDeque<Pair<String, Long>>()
+        stack.addLast(rootDir to rootMtime)
+        var depth = 0
         while (stack.isNotEmpty()) {
-            if (!ctx.alive()) return
-            val (dir, depth) = stack.removeLast()
-            val path = dir.path
-            val children: List<XEntry>? = try {
-                ctx.fs.list(dir)
+            if (!s.alive()) return
+            val (dir, mtime) = stack.removeLast()
+            depth = dir.count { it == '/' }
+            if (depth > MAX_DEPTH) continue
+            for (sub in processDir(s, dir, mtime, buf, isVolumeRoot = false)) stack.addLast(sub)
+        }
+    }
+
+    /**
+     * 处理一个目录：写它的文件与目录行，返回要继续走的子目录 (path, mtime)。
+     * File 读不了时走特权通道（子树整体用特权通道走完，返回空）。
+     */
+    private fun processDir(s: Session, dir: String, mtime: Long, buf: Buf, isVolumeRoot: Boolean): List<Pair<String, Long>> {
+        if (isRestricted(dir)) {
+            walkPrivileged(s, dir, buf)
+            return emptyList()
+        }
+        val names = File(dir).list()
+        if (names == null) {
+            walkPrivileged(s, dir, buf)
+            return emptyList()
+        }
+        if (isVolumeRoot && names.isEmpty()) {
+            // 卷根空：多半是没权限，保留旧记录
+            s.failed += dir
+            return emptyList()
+        }
+        s.current = dir
+        val subdirs = ArrayList<Pair<String, Long>>()
+        var empty = true
+        for (name in names) {
+            if (name != ".nomedia") empty = false
+            val child = if (dir == "/") "/$name" else "$dir/$name"
+            val attrs = try {
+                Files.readAttributes(Paths.get(child), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            } catch (t: Throwable) {
+                null
+            } ?: continue
+            if (attrs.isSymbolicLink) continue
+            if (attrs.isDirectory) {
+                if (!IndexRules.skipDir(child, name)) subdirs += child to attrs.lastModifiedTime().toMillis()
+            } else if (attrs.isRegularFile) {
+                handleFile(s, dir, child, name, attrs.size(), attrs.lastModifiedTime().toMillis(), null, buf)
+            }
+        }
+        handleDir(s, dir, mtime, empty, buf)
+        return subdirs
+    }
+
+    /** 特权通道（Shizuku/root）走一棵子树。 */
+    private fun walkPrivileged(s: Session, rootDir: String, buf: Buf) {
+        val rootEntry = runCatching { s.fs.stat(XId.file(rootDir)) }.getOrNull()
+            ?: XEntry(id = XId.file(rootDir), name = rootDir.substringAfterLast('/'), isDir = true)
+        val stack = ArrayDeque<XEntry>()
+        stack.addLast(rootEntry)
+        while (stack.isNotEmpty()) {
+            if (!s.alive()) return
+            val d = stack.removeLast()
+            val dir = d.path.trimEnd('/').ifEmpty { "/" }
+            if (dir.count { it == '/' } > MAX_DEPTH) continue
+            val children = try {
+                s.fs.list(d)
             } catch (t: Throwable) {
                 null
             }
-            // 卷根列不出 / 列出空（多半是没权限）：保留库里原有记录，不当作被删
-            if (children == null || (first && children.isEmpty())) {
-                keepSubtree(ctx, path)
-                first = false
+            if (children == null || (children.isEmpty() && isRestricted(dir))) {
+                // 列不出，或受限目录列出空（多半是没授权）：保留旧记录，不算空目录
+                s.failed += dir
                 continue
             }
-            first = false
-            progress(ctx, path)
-
-            val oldDir = queryDir(path)
-            val dirMtime = dir.mtime
-            val unchanged = !ctx.full && oldDir != null && dirMtime > 0 && oldDir == dirMtime
-            val realChildren = children.filter { it.name != ".nomedia" }
-            val empty = realChildren.isEmpty()
-            ctx.writer.op { d ->
-                val cv = ContentValues()
-                cv.put("path", path)
-                cv.put("mtime", dirMtime)
-                cv.put("empty", if (empty) 1 else 0)
-                cv.put("seen", ctx.gen)
-                d.insertWithOnConflict("dirs", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
-            }
-
-            if (unchanged) {
-                ctx.writer.op { d -> d.execSQL("UPDATE files SET seen = ? WHERE parent = ?", arrayOf<Any>(ctx.gen, path)) }
-                for (c in children) {
-                    if (c.isDir) {
-                        if (!IndexRules.skipDir(c.path, c.name) && depth < MAX_DEPTH) stack.addLast(c to depth + 1)
-                    } else {
-                        ctx.files++
-                    }
-                }
-                continue
-            }
-
-            val existing = existingIn(path)
+            s.current = dir
+            var empty = true
             for (c in children) {
+                if (c.name != ".nomedia") empty = false
                 if (c.isDir) {
-                    if (!IndexRules.skipDir(c.path, c.name) && depth < MAX_DEPTH) stack.addLast(c to depth + 1)
-                    continue
+                    if (!IndexRules.skipDir(c.path, c.name)) stack.addLast(c)
+                } else {
+                    handleFile(s, dir, c.path, c.name, maxOf(0L, c.size), c.mtime, c.mime, buf)
                 }
-                val ext = c.extension
-                if (IndexRules.skipFile(path, c.name, ext)) continue
-                ctx.files++
-                val old = existing[c.path]
-                val size = if (c.size < 0) 0L else c.size
-                if (old != null && !ctx.full && old.size == size && old.mtime == c.mtime) {
-                    ctx.writer.op { d -> d.execSQL("UPDATE files SET seen = ? WHERE id = ?", arrayOf<Any>(ctx.gen, old.id)) }
-                    continue
+            }
+            handleDir(s, dir, d.mtime, empty, buf)
+        }
+    }
+
+    private fun handleFile(s: Session, parent: String, path: String, name: String, size: Long, mtime: Long, mime0: String?, buf: Buf) {
+        val ext = extOf(name)
+        if (IndexRules.skipFile(parent, name, ext)) return
+        s.counter.incrementAndGet()
+        val old = s.files[path]
+        if (old != null) {
+            old.seen = true
+            if (!s.full && old.size == size && old.mtime == mtime) return
+        }
+        val mime = mimeOf(ext, mime0)
+        val cls = if (old?.manual == true) null else classify(path, name, ext, mime, size)
+        buf.files += FileRow(path, parent, name, ext, size, mtime, mime, old?.id ?: 0L, cls)
+        if (buf.size >= BATCH) flush(buf)
+    }
+
+    private fun handleDir(s: Session, dir: String, mtime: Long, empty: Boolean, buf: Buf) {
+        val old = s.dirs[dir]
+        if (old != null) {
+            old.seen = true
+            if (old.mtime == mtime && old.empty == empty) return
+        }
+        buf.dirs += DirRow(dir, mtime, empty)
+        if (buf.size >= BATCH) flush(buf)
+    }
+
+    /** 把一批行写进库（一个事务）。 */
+    private fun flush(buf: Buf) {
+        if (buf.size == 0) return
+        synchronized(writeLock) {
+            db.inTx { d ->
+                val insFile = d.compileStatement(
+                    "INSERT OR IGNORE INTO files(path, parent, name, ext, size, mtime, mime, category, sub, source, tags, manual) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,0)"
+                )
+                val updFull = d.compileStatement(
+                    "UPDATE files SET size=?, mtime=?, mime=?, category=?, sub=?, source=?, tags=?, manual=0, " +
+                        "quick_hash=NULL, full_hash=NULL, full_hash_mtime=0 WHERE id=?"
+                )
+                val updMeta = d.compileStatement(
+                    "UPDATE files SET size=?, mtime=?, mime=?, quick_hash=NULL, full_hash=NULL, full_hash_mtime=0 WHERE id=?"
+                )
+                val delFts = d.compileStatement("DELETE FROM files_fts WHERE docid=?")
+                val insFts = d.compileStatement("INSERT INTO files_fts(docid, name, tags) VALUES (?,?,?)")
+                val upDir = d.compileStatement("INSERT OR REPLACE INTO dirs(path, mtime, empty) VALUES (?,?,?)")
+                try {
+                    for (r in buf.files) {
+                        try {
+                            val c = r.cls
+                            if (r.oldId == 0L) {
+                                if (c == null) continue
+                                insFile.clearBindings()
+                                insFile.bindString(1, r.path)
+                                insFile.bindString(2, r.parent)
+                                insFile.bindString(3, r.name)
+                                insFile.bindString(4, r.ext)
+                                insFile.bindLong(5, r.size)
+                                insFile.bindLong(6, r.mtime)
+                                bindOpt(insFile, 7, r.mime)
+                                insFile.bindString(8, c.category.name)
+                                bindOpt(insFile, 9, c.subCategory)
+                                bindOpt(insFile, 10, c.sourceApp)
+                                insFile.bindString(11, joinTags(c.tags))
+                                val id = insFile.executeInsert()
+                                if (id > 0) {
+                                    insFts.clearBindings()
+                                    insFts.bindLong(1, id)
+                                    insFts.bindString(2, ftsName(r.name))
+                                    insFts.bindString(3, ftsTags(c.tags))
+                                    insFts.executeInsert()
+                                }
+                            } else if (c != null) {
+                                updFull.clearBindings()
+                                updFull.bindLong(1, r.size)
+                                updFull.bindLong(2, r.mtime)
+                                bindOpt(updFull, 3, r.mime)
+                                updFull.bindString(4, c.category.name)
+                                bindOpt(updFull, 5, c.subCategory)
+                                bindOpt(updFull, 6, c.sourceApp)
+                                updFull.bindString(7, joinTags(c.tags))
+                                updFull.bindLong(8, r.oldId)
+                                updFull.executeUpdateDelete()
+                                delFts.bindLong(1, r.oldId)
+                                delFts.executeUpdateDelete()
+                                insFts.clearBindings()
+                                insFts.bindLong(1, r.oldId)
+                                insFts.bindString(2, ftsName(r.name))
+                                insFts.bindString(3, ftsTags(c.tags))
+                                insFts.executeInsert()
+                            } else {
+                                updMeta.clearBindings()
+                                updMeta.bindLong(1, r.size)
+                                updMeta.bindLong(2, r.mtime)
+                                bindOpt(updMeta, 3, r.mime)
+                                updMeta.bindLong(4, r.oldId)
+                                updMeta.executeUpdateDelete()
+                            }
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "write ${r.path} failed", t)
+                        }
+                    }
+                    for (r in buf.dirs) {
+                        upDir.bindString(1, r.path)
+                        upDir.bindLong(2, r.mtime)
+                        upDir.bindLong(3, if (r.empty) 1 else 0)
+                        upDir.executeInsert()
+                    }
+                } finally {
+                    insFile.close(); updFull.close(); updMeta.close(); delFts.close(); insFts.close(); upDir.close()
                 }
-                upsertFile(ctx.writer, c.path, path, c.name, ext, size, c.mtime, c.mime, old, ctx.gen)
+            }
+        }
+        buf.files.clear()
+        buf.dirs.clear()
+    }
+
+    /** 扫描结束：删掉这次没见到、也不在“列不出”目录下的记录。 */
+    private fun deleteUnseen(s: Session) {
+        val failed = s.failed.toList()
+        fun keep(path: String) = failed.any { f -> path == f || path.startsWith("$f/") }
+        val fileIds = s.files.values.filter { !it.seen }.map { it.id }.toHashSet()
+        if (failed.isNotEmpty() && fileIds.isNotEmpty()) {
+            for ((p, r) in s.files) if (!r.seen && keep(p)) fileIds.remove(r.id)
+        }
+        val dirPaths = s.dirs.filter { (p, d) -> !d.seen && !keep(p) }.keys.toList()
+        if (fileIds.isEmpty() && dirPaths.isEmpty()) return
+        synchronized(writeLock) {
+            db.inTx { d ->
+                for (chunk in fileIds.chunked(CHUNK)) {
+                    val inList = chunk.joinToString(",")
+                    d.execSQL("DELETE FROM files WHERE id IN ($inList)")
+                    d.execSQL("DELETE FROM files_fts WHERE docid IN ($inList)")
+                }
+                for (chunk in dirPaths.chunked(CHUNK)) {
+                    d.execSQL("DELETE FROM dirs WHERE path IN (" + chunk.joinToString(",") { "?" } + ")", chunk.toTypedArray<Any>())
+                }
             }
         }
     }
 
-    private class OldRow(val id: Long, val size: Long, val mtime: Long, val manual: Boolean, val name: String)
-
-    private fun existingIn(parent: String): Map<String, OldRow> {
-        val out = HashMap<String, OldRow>()
-        db.rawQuery("SELECT id, path, size, mtime, manual, name FROM files WHERE parent = ?", arrayOf(parent)).use { c ->
-            while (c.moveToNext()) out[c.getString(1)] = OldRow(c.getLong(0), c.getLong(2), c.getLong(3), c.getInt(4) != 0, c.getString(5))
+    /** 一次性把旧记录读进内存（[under] 不为空时只读该目录下的）。 */
+    private fun loadFiles(under: String?): Map<String, OldRow> {
+        val out = ConcurrentHashMap<String, OldRow>()
+        val (sql, args) = if (under == null) {
+            "SELECT path, id, size, mtime, manual FROM files" to null
+        } else {
+            "SELECT path, id, size, mtime, manual FROM files WHERE path > ? AND path < ?" to arrayOf("$under/", "${under}0")
+        }
+        db.rawQuery(sql, args).use { c ->
+            while (c.moveToNext()) out[c.getString(0)] = OldRow(c.getLong(1), c.getLong(2), c.getLong(3), c.getInt(4) != 0)
         }
         return out
     }
 
-    private fun queryDir(path: String): Long? =
-        db.rawQuery("SELECT mtime FROM dirs WHERE path = ?", arrayOf(path)).use { c -> if (c.moveToFirst()) c.getLong(0) else null }
-
-    /** 列不出的目录：把它下面库里已有的行都标成“本次见过”，避免误删。 */
-    private fun keepSubtree(ctx: ScanCtx, path: String) {
-        val like = likePrefix(path)
-        ctx.writer.op { d -> d.execSQL("UPDATE files SET seen = ? WHERE path LIKE ? ESCAPE '\\'", arrayOf<Any>(ctx.gen, like)) }
-        ctx.writer.op { d -> d.execSQL("UPDATE dirs SET seen = ? WHERE path = ? OR path LIKE ? ESCAPE '\\'", arrayOf<Any>(ctx.gen, path, like)) }
+    private fun loadDirs(under: String?): Map<String, OldDir> {
+        val out = ConcurrentHashMap<String, OldDir>()
+        val (sql, args) = if (under == null) {
+            "SELECT path, mtime, empty FROM dirs" to null
+        } else {
+            "SELECT path, mtime, empty FROM dirs WHERE path = ? OR (path > ? AND path < ?)" to arrayOf(under, "$under/", "${under}0")
+        }
+        db.rawQuery(sql, args).use { c ->
+            while (c.moveToNext()) out[c.getString(0)] = OldDir(c.getLong(1), c.getInt(2) != 0)
+        }
+        return out
     }
 
     private fun classify(path: String, name: String, ext: String, mime: String?, size: Long): Classification =
@@ -222,70 +454,7 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
     private fun mimeOf(ext: String, mime: String?): String? =
         mime ?: if (ext.isEmpty()) null else runCatching { MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) }.getOrNull()
 
-    /** 写入或更新一个文件行（含 FTS）。manual 分类的行只更新元数据。 */
-    private fun upsertFile(
-        writer: BatchWriter, path: String, parent: String, name: String, ext: String,
-        size: Long, mtime: Long, mime0: String?, old: OldRow?, gen: Long,
-    ) {
-        val mime = mimeOf(ext, mime0)
-        val keepClass = old?.manual == true && old.name == name
-        val c = if (keepClass) null else classify(path, name, ext, mime, size)
-        writer.op { d ->
-            val cv = ContentValues()
-            cv.put("path", path)
-            cv.put("parent", parent)
-            cv.put("name", name)
-            cv.put("ext", ext)
-            cv.put("size", size)
-            cv.put("mtime", mtime)
-            cv.put("mime", mime)
-            cv.put("seen", gen)
-            if (old == null || old.size != size || old.mtime != mtime) {
-                cv.putNull("quick_hash")
-                cv.putNull("full_hash")
-                cv.put("full_hash_mtime", 0)
-            }
-            if (c != null) {
-                cv.put("category", c.category.name)
-                cv.put("sub", c.subCategory)
-                cv.put("source", c.sourceApp)
-                cv.put("tags", joinTags(c.tags))
-                cv.put("manual", 0)
-            }
-            if (old == null) {
-                if (c == null) return@op
-                val id = d.insertWithOnConflict("files", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
-                if (id > 0) {
-                    d.execSQL("INSERT INTO files_fts(docid, name, tags) VALUES (?, ?, ?)", arrayOf<Any>(id, ftsName(name), ftsTags(c.tags)))
-                } else {
-                    // 同一路径已存在（并发 onAdded）：转为更新
-                    d.update("files", cv, "path = ?", arrayOf(path))
-                }
-            } else {
-                d.update("files", cv, "id = ?", arrayOf(old.id.toString()))
-                if (c != null) {
-                    d.execSQL("DELETE FROM files_fts WHERE docid = ?", arrayOf<Any>(old.id))
-                    d.execSQL("INSERT INTO files_fts(docid, name, tags) VALUES (?, ?, ?)", arrayOf<Any>(old.id, ftsName(name), ftsTags(c.tags)))
-                }
-            }
-        }
-    }
-
-    private fun progress(ctx: ScanCtx, dir: String) {
-        val now = SystemClock.uptimeMillis()
-        if (now - ctx.lastProgressAt < 200) return
-        ctx.lastProgressAt = now
-        val text = "已扫描 ${ctx.files} 个文件 · $dir"
-        if (now - ctx.lastStatsAt > 3000) {
-            ctx.lastStatsAt = now
-            ctx.writer.flush()
-            publishStats(scanning = true, progress = text)
-        } else {
-            _stats.update { it.copy(scanning = true, scanProgress = text) }
-        }
-    }
-
-    // ------------------------------------------------------------------ 统计
+    // ================================================================== 统计
 
     private fun publishStats(scanning: Boolean, progress: String, lastScanAt: Long? = null) {
         val byCat = LinkedHashMap<Category, CategoryStat>()
@@ -316,30 +485,26 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         }
     }
 
-    // ------------------------------------------------------------------ 哈希
+    private fun refreshStatsLater() {
+        val st = _stats.value
+        // 扫描中由 ticker 刷新，不在这里插队
+        if (!st.scanning) publishStats(false, st.scanProgress)
+    }
 
-    /** 只对 >1MB 且同大小有多个的文件算快速哈希。 */
-    private fun computeQuickHashes(alive: () -> Boolean) {
-        val todo = ArrayList<Triple<Long, String, Long>>()
-        db.rawQuery(
-            "SELECT id, path, size FROM files WHERE size > ? AND quick_hash IS NULL AND size IN " +
-                "(SELECT size FROM files WHERE size > ? GROUP BY size HAVING COUNT(*) > 1)",
-            arrayOf(QUICK_MIN_SIZE.toString(), QUICK_MIN_SIZE.toString()),
-        ).use { c -> while (c.moveToNext()) todo += Triple(c.getLong(0), c.getString(1), c.getLong(2)) }
-        if (todo.isEmpty()) return
-        val writer = BatchWriter(db)
-        var lastAt = 0L
-        for ((i, row) in todo.withIndex()) {
-            if (!alive()) break
-            val now = SystemClock.uptimeMillis()
-            if (now - lastAt > 300) {
-                lastAt = now
-                _stats.update { it.copy(scanning = true, scanProgress = "计算快速哈希 ${i + 1}/${todo.size}") }
-            }
-            val h = runCatching { quickHashOf(row.second, row.third) }.getOrNull() ?: continue
-            writer.op { d -> d.execSQL("UPDATE files SET quick_hash = ? WHERE id = ?", arrayOf<Any>(h, row.first)) }
-        }
-        writer.flush()
+    // ================================================================== 哈希（按需）
+
+    /**
+     * 快速哈希（大小 + 头尾 64KB 的 SHA-1），按需计算并缓存。扫描时不算。
+     * 合同外的额外方法：清理扫描可用 `(AiGraph.index as? DefaultFileIndex)?.quickHash(id)`。
+     */
+    suspend fun quickHash(id: Long): String? = withContext(Dispatchers.IO) {
+        val row = db.rawQuery("SELECT path, size, quick_hash FROM files WHERE id = ?", arrayOf(id.toString())).use { c ->
+            if (c.moveToFirst()) Triple(c.getString(0), c.getLong(1), c.getString(2)) else null
+        } ?: return@withContext null
+        row.third?.let { return@withContext it }
+        val h = runCatching { quickHashOf(row.first, row.second) }.getOrNull() ?: return@withContext null
+        db.execSQL("UPDATE files SET quick_hash = ? WHERE id = ?", arrayOf<Any>(h, id))
+        h
     }
 
     private fun quickHashOf(path: String, size: Long): String? {
@@ -363,7 +528,6 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
             }
             return hex(md.digest())
         }
-        // 只能走文件系统（如 Shizuku 进 Android/data）：顺序读，跳过中间
         val fs = Graph.fsRegistry.forScheme(XId.SCHEME_FILE)
         val entry = fs.stat(XId.file(path)) ?: return null
         fs.openIn(entry).use { input ->
@@ -382,7 +546,7 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
 
     override suspend fun fullHash(id: Long): String? = withContext(Dispatchers.IO) {
         val row = db.rawQuery("SELECT path, mtime, full_hash, full_hash_mtime FROM files WHERE id = ?", arrayOf(id.toString())).use { c ->
-            if (c.moveToFirst()) arrayOf(c.getString(0), c.getLong(1), c.getString(2), c.getLong(3)) else null
+            if (c.moveToFirst()) arrayOf<Any?>(c.getString(0), c.getLong(1), c.getString(2), c.getLong(3)) else null
         } ?: return@withContext null
         val path = row[0] as String
         val mtime = row[1] as Long
@@ -412,9 +576,35 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         return fs.openIn(entry)
     }
 
-    // ------------------------------------------------------------------ 查询
+    // ================================================================== 查询
 
-    override suspend fun query(q: FileQuery): List<IndexedFile> = withContext(Dispatchers.IO) {
+    override suspend fun query(q: FileQuery): List<IndexedFile> = queryPage(q, 0)
+
+    /**
+     * 分页查询（合同外的额外方法）：按 [FileQuery.sort] 排序，跳过 [offset] 条，取 [FileQuery.limit] 条。
+     * 用法：`(AiGraph.index as? DefaultFileIndex)?.queryPage(q, offset)`。
+     */
+    suspend fun queryPage(q: FileQuery, offset: Int): List<IndexedFile> = withContext(Dispatchers.IO) {
+        val (where, args) = buildWhere(q)
+        val order = when (q.sort) {
+            Sort.MTIME_DESC -> "mtime DESC, id DESC"
+            Sort.MTIME_ASC -> "mtime ASC, id ASC"
+            Sort.SIZE_DESC -> "size DESC, id DESC"
+            Sort.NAME_ASC -> "name COLLATE NOCASE ASC, id ASC"
+        }
+        val limit = q.limit.coerceIn(1, MAX_LIMIT)
+        val off = offset.coerceAtLeast(0)
+        val sql = "SELECT $COLS FROM files$where ORDER BY $order LIMIT $limit OFFSET $off"
+        db.rawQuery(sql, args).use { c -> readRows(c) }
+    }
+
+    /** 满足条件的总数（合同外的额外方法，配合分页显示总数）。 */
+    suspend fun queryCount(q: FileQuery): Int = withContext(Dispatchers.IO) {
+        val (where, args) = buildWhere(q)
+        db.rawQuery("SELECT COUNT(*) FROM files$where", args).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+    }
+
+    private fun buildWhere(q: FileQuery): Pair<String, Array<String>> {
         val where = ArrayList<String>()
         val args = ArrayList<String>()
         q.text?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
@@ -437,8 +627,9 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         q.subCategory?.let { where += "sub = ?"; args += it }
         q.sourceApp?.let { where += "source = ?"; args += it }
         q.pathPrefix?.trimEnd('/')?.takeIf { it.isNotEmpty() }?.let { p ->
-            where += "(path = ? OR path LIKE ? ESCAPE '\\')"
-            args += p; args += likePrefix(p)
+            // 区间比较可以用上 path 的唯一索引（LIKE 用不上）
+            where += "(path > ? AND path < ?)"
+            args += "$p/"; args += "${p}0"
         }
         if (q.exts.isNotEmpty()) {
             val exts = q.exts.map { it.trim().trimStart('.').lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
@@ -452,16 +643,8 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         val now = System.currentTimeMillis()
         q.olderThanMs?.let { where += "mtime < ?"; args += (now - it).toString() }
         q.newerThanMs?.let { where += "mtime >= ?"; args += (now - it).toString() }
-        val order = when (q.sort) {
-            Sort.MTIME_DESC -> "mtime DESC"
-            Sort.MTIME_ASC -> "mtime ASC"
-            Sort.SIZE_DESC -> "size DESC"
-            Sort.NAME_ASC -> "name COLLATE NOCASE ASC"
-        }
-        val limit = q.limit.coerceIn(1, MAX_LIMIT)
-        val sql = "SELECT $COLS FROM files" + (if (where.isEmpty()) "" else " WHERE " + where.joinToString(" AND ")) +
-            " ORDER BY $order LIMIT $limit"
-        db.rawQuery(sql, args.toTypedArray()).use { c -> readRows(c) }
+        val clause = if (where.isEmpty()) "" else " WHERE " + where.joinToString(" AND ")
+        return clause to args.toTypedArray()
     }
 
     override suspend fun get(id: Long): IndexedFile? = withContext(Dispatchers.IO) {
@@ -477,22 +660,17 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
             val name = db.rawQuery("SELECT name FROM files WHERE id = ?", arrayOf(id.toString())).use { cur ->
                 if (cur.moveToFirst()) cur.getString(0) else null
             } ?: return@withContext
-            db.beginTransaction()
-            try {
-                val cv = ContentValues()
-                cv.put("category", c.category.name)
-                cv.put("sub", c.subCategory)
-                cv.put("source", c.sourceApp)
-                cv.put("tags", joinTags(c.tags))
-                cv.put("manual", 1)
-                db.update("files", cv, "id = ?", arrayOf(id.toString()))
-                db.execSQL("DELETE FROM files_fts WHERE docid = ?", arrayOf<Any>(id))
-                db.execSQL("INSERT INTO files_fts(docid, name, tags) VALUES (?, ?, ?)", arrayOf<Any>(id, ftsName(name), ftsTags(c.tags)))
-                db.setTransactionSuccessful()
-            } finally {
-                db.endTransaction()
+            synchronized(writeLock) {
+                db.inTx { d ->
+                    d.execSQL(
+                        "UPDATE files SET category = ?, sub = ?, source = ?, tags = ?, manual = 1 WHERE id = ?",
+                        arrayOf<Any?>(c.category.name, c.subCategory, c.sourceApp, joinTags(c.tags), id),
+                    )
+                    d.execSQL("DELETE FROM files_fts WHERE docid = ?", arrayOf<Any>(id))
+                    d.execSQL("INSERT INTO files_fts(docid, name, tags) VALUES (?, ?, ?)", arrayOf<Any>(id, ftsName(name), ftsTags(c.tags)))
+                }
             }
-            publishStats(_stats.value.scanning, _stats.value.scanProgress)
+            refreshStatsLater()
         }
     }
 
@@ -519,98 +697,108 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         out
     }
 
-    // ------------------------------------------------------------------ 增量维护
+    // ================================================================== 增量维护
 
     override suspend fun onMoved(oldPath: String, newPath: String) {
         withContext(Dispatchers.IO) {
             val o = oldPath.trimEnd('/')
             val n = newPath.trimEnd('/')
             if (o.isEmpty() || n.isEmpty() || o == n) return@withContext
-            val fileRow = db.rawQuery("SELECT id, size, mtime, manual, name FROM files WHERE path = ?", arrayOf(o)).use { c ->
-                if (c.moveToFirst()) OldRow(c.getLong(0), c.getLong(1), c.getLong(2), c.getInt(3) != 0, c.getString(4)) else null
+            val row = db.rawQuery("SELECT id, manual, name, mime, size FROM files WHERE path = ?", arrayOf(o)).use { c ->
+                if (c.moveToFirst()) arrayOf<Any?>(c.getLong(0), c.getInt(1) != 0, c.getString(2), c.getString(3), c.getLong(4)) else null
             }
-            if (fileRow != null) {
-                db.execSQL("DELETE FROM files WHERE path = ?", arrayOf<Any>(n))
-                db.execSQL("DELETE FROM files_fts WHERE docid NOT IN (SELECT id FROM files)")
+            if (row != null) {
+                val id = row[0] as Long
+                val manual = row[1] as Boolean
+                val oldName = row[2] as String
                 val name = n.substringAfterLast('/')
                 val ext = extOf(name)
-                val writer = BatchWriter(db)
-                val mime = db.rawQuery("SELECT mime FROM files WHERE id = ?", arrayOf(fileRow.id.toString())).use { c -> if (c.moveToFirst()) c.getString(0) else null }
-                // 移动后来源/分类可能变化：重分类（手动分类且名字没变的保留）
-                upsertFile(writer, n, parentOf(n), name, ext, fileRow.size, fileRow.mtime, mime,
-                    OldRow(fileRow.id, fileRow.size, fileRow.mtime, fileRow.manual, if (fileRow.name == name) name else ""), 0)
-                writer.flush()
-                db.execSQL("UPDATE files SET seen = (SELECT MAX(seen) FROM files) WHERE id = ?", arrayOf<Any>(fileRow.id))
-                markDirNonEmpty(parentOf(n))
-                refreshEmpty(parentOf(o))
+                val cls = if (manual && oldName == name) null else classify(n, name, ext, row[3] as String?, row[4] as Long)
+                synchronized(writeLock) {
+                    db.inTx { d ->
+                        val gone = d.rawQuery("SELECT id FROM files WHERE path = ?", arrayOf(n)).use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
+                        if (gone != 0L && gone != id) {
+                            d.execSQL("DELETE FROM files WHERE id = ?", arrayOf<Any>(gone))
+                            d.execSQL("DELETE FROM files_fts WHERE docid = ?", arrayOf<Any>(gone))
+                        }
+                        d.execSQL("UPDATE files SET path = ?, parent = ?, name = ?, ext = ? WHERE id = ?", arrayOf<Any>(n, parentOf(n), name, ext, id))
+                        if (cls != null) {
+                            d.execSQL(
+                                "UPDATE files SET category = ?, sub = ?, source = ?, tags = ?, manual = 0 WHERE id = ?",
+                                arrayOf<Any?>(cls.category.name, cls.subCategory, cls.sourceApp, joinTags(cls.tags), id),
+                            )
+                        }
+                        val tags = d.rawQuery("SELECT tags FROM files WHERE id = ?", arrayOf(id.toString())).use { c -> if (c.moveToFirst()) c.getString(0) else "" }
+                        d.execSQL("DELETE FROM files_fts WHERE docid = ?", arrayOf<Any>(id))
+                        d.execSQL("INSERT INTO files_fts(docid, name, tags) VALUES (?, ?, ?)", arrayOf<Any>(id, ftsName(name), ftsTags(splitTags(tags))))
+                    }
+                }
             } else {
                 moveSubtree(o, n)
-                markDirNonEmpty(parentOf(n))
-                refreshEmpty(parentOf(o))
             }
-            publishStats(_stats.value.scanning, _stats.value.scanProgress)
+            markDirNonEmpty(parentOf(n))
+            refreshEmpty(parentOf(o))
+            refreshStatsLater()
         }
     }
 
     /** 目录改名/移动：批量改前缀，再按新路径重分类（来源可能变了）。 */
     private fun moveSubtree(o: String, n: String) {
-        val likeO = likePrefix(o)
         val cut = o.length + 1
-        db.beginTransaction()
-        try {
-            // 目标位置原有的记录先清掉，避免 UNIQUE 冲突
-            db.execSQL("DELETE FROM files WHERE path LIKE ? ESCAPE '\\'", arrayOf<Any>(likePrefix(n)))
-            db.execSQL("DELETE FROM dirs WHERE path = ? OR path LIKE ? ESCAPE '\\'", arrayOf<Any>(n, likePrefix(n)))
-            db.execSQL(
-                "UPDATE files SET path = ? || substr(path, ?), parent = ? || substr(parent, ?) WHERE path LIKE ? ESCAPE '\\'",
-                arrayOf<Any>(n, cut, n, cut, likeO),
-            )
-            db.execSQL(
-                "UPDATE dirs SET path = ? || substr(path, ?) WHERE path = ? OR path LIKE ? ESCAPE '\\'",
-                arrayOf<Any>(n, cut, o, likeO),
-            )
-            db.execSQL("DELETE FROM files_fts WHERE docid NOT IN (SELECT id FROM files)")
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-        // 重分类（manual 的不动）
-        val rows = ArrayList<Array<Any?>>()
-        db.rawQuery("SELECT id, path, name, ext, mime, size FROM files WHERE manual = 0 AND path LIKE ? ESCAPE '\\'", arrayOf(likePrefix(n))).use { c ->
-            while (c.moveToNext()) rows += arrayOf(c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getLong(5))
-        }
-        val writer = BatchWriter(db)
-        for (r in rows) {
-            val cls = classify(r[1] as String, r[2] as String, r[3] as String, r[4] as String?, r[5] as Long)
-            writer.op { d ->
-                val cv = ContentValues()
-                cv.put("category", cls.category.name)
-                cv.put("sub", cls.subCategory)
-                cv.put("source", cls.sourceApp)
-                cv.put("tags", joinTags(cls.tags))
-                d.update("files", cv, "id = ?", arrayOf(r[0].toString()))
-                d.execSQL("DELETE FROM files_fts WHERE docid = ?", arrayOf<Any>(r[0] as Long))
-                d.execSQL("INSERT INTO files_fts(docid, name, tags) VALUES (?, ?, ?)", arrayOf<Any>(r[0] as Long, ftsName(r[2] as String), ftsTags(cls.tags)))
+        synchronized(writeLock) {
+            db.inTx { d ->
+                // 目标位置原有的记录先清掉，避免 UNIQUE 冲突
+                d.execSQL("DELETE FROM files_fts WHERE docid IN (SELECT id FROM files WHERE path > ? AND path < ?)", arrayOf<Any>("$n/", "${n}0"))
+                d.execSQL("DELETE FROM files WHERE path > ? AND path < ?", arrayOf<Any>("$n/", "${n}0"))
+                d.execSQL("DELETE FROM dirs WHERE path = ? OR (path > ? AND path < ?)", arrayOf<Any>(n, "$n/", "${n}0"))
+                d.execSQL(
+                    "UPDATE files SET path = ? || substr(path, ?), parent = ? || substr(parent, ?) WHERE path > ? AND path < ?",
+                    arrayOf<Any>(n, cut, n, cut, "$o/", "${o}0"),
+                )
+                d.execSQL(
+                    "UPDATE dirs SET path = ? || substr(path, ?) WHERE path = ? OR (path > ? AND path < ?)",
+                    arrayOf<Any>(n, cut, o, "$o/", "${o}0"),
+                )
             }
         }
-        writer.flush()
+        val rows = ArrayList<Array<Any?>>()
+        db.rawQuery("SELECT id, path, name, ext, mime, size FROM files WHERE manual = 0 AND path > ? AND path < ?", arrayOf("$n/", "${n}0")).use { c ->
+            while (c.moveToNext()) rows += arrayOf(c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), c.getLong(5))
+        }
+        for (chunk in rows.chunked(BATCH)) {
+            val classified = chunk.map { r -> r to classify(r[1] as String, r[2] as String, r[3] as String, r[4] as String?, r[5] as Long) }
+            synchronized(writeLock) {
+                db.inTx { d ->
+                    for ((r, cls) in classified) {
+                        val id = r[0] as Long
+                        d.execSQL(
+                            "UPDATE files SET category = ?, sub = ?, source = ?, tags = ? WHERE id = ?",
+                            arrayOf<Any?>(cls.category.name, cls.subCategory, cls.sourceApp, joinTags(cls.tags), id),
+                        )
+                        d.execSQL("DELETE FROM files_fts WHERE docid = ?", arrayOf<Any>(id))
+                        d.execSQL("INSERT INTO files_fts(docid, name, tags) VALUES (?, ?, ?)", arrayOf<Any>(id, ftsName(r[2] as String), ftsTags(cls.tags)))
+                    }
+                }
+            }
+        }
     }
 
     override suspend fun onRemoved(path: String) {
         withContext(Dispatchers.IO) {
             val p = path.trimEnd('/')
             if (p.isEmpty()) return@withContext
-            db.beginTransaction()
-            try {
-                db.execSQL("DELETE FROM files WHERE path = ? OR path LIKE ? ESCAPE '\\'", arrayOf<Any>(p, likePrefix(p)))
-                db.execSQL("DELETE FROM dirs WHERE path = ? OR path LIKE ? ESCAPE '\\'", arrayOf<Any>(p, likePrefix(p)))
-                db.execSQL("DELETE FROM files_fts WHERE docid NOT IN (SELECT id FROM files)")
-                db.setTransactionSuccessful()
-            } finally {
-                db.endTransaction()
+            synchronized(writeLock) {
+                db.inTx { d ->
+                    d.execSQL(
+                        "DELETE FROM files_fts WHERE docid IN (SELECT id FROM files WHERE path = ? OR (path > ? AND path < ?))",
+                        arrayOf<Any>(p, "$p/", "${p}0"),
+                    )
+                    d.execSQL("DELETE FROM files WHERE path = ? OR (path > ? AND path < ?)", arrayOf<Any>(p, "$p/", "${p}0"))
+                    d.execSQL("DELETE FROM dirs WHERE path = ? OR (path > ? AND path < ?)", arrayOf<Any>(p, "$p/", "${p}0"))
+                }
             }
             refreshEmpty(parentOf(p))
-            publishStats(_stats.value.scanning, _stats.value.scanProgress)
+            refreshStatsLater()
         }
     }
 
@@ -619,37 +807,45 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
             val p = path.trimEnd('/')
             if (p.isEmpty()) return@withContext
             val fs = Graph.fsRegistry.forScheme(XId.SCHEME_FILE)
-            val entry = runCatching { fs.stat(XId.file(p)) }.getOrNull() ?: return@withContext
             val parent = parentOf(p)
-            val gen = currentGen()
-            if (entry.isDir) {
-                if (IndexRules.skipDir(entry.path, entry.name)) return@withContext
-                val writer = BatchWriter(db)
-                val ctx = ScanCtx(fs, gen, true, writer) { true }
-                walk(ctx, entry, isVolumeRoot = false)
-                writer.flush()
-            } else {
-                val ext = entry.extension
-                if (IndexRules.skipFile(parent, entry.name, ext)) return@withContext
-                val old = db.rawQuery("SELECT id, size, mtime, manual, name FROM files WHERE path = ?", arrayOf(p)).use { c ->
-                    if (c.moveToFirst()) OldRow(c.getLong(0), c.getLong(1), c.getLong(2), c.getInt(3) != 0, c.getString(4)) else null
+            val f = File(p)
+            val buf = Buf()
+            val isDir: Boolean
+            if (f.exists()) {
+                isDir = f.isDirectory
+                if (isDir) {
+                    if (IndexRules.skipDir(p, f.name)) return@withContext
+                    val s = Session(fs, false, { true }, loadFiles(p), loadDirs(p))
+                    walkTree(s, p, f.lastModified(), buf)
+                } else {
+                    val s = Session(fs, false, { true }, singleRow(p), emptyMap())
+                    handleFile(s, parent, p, f.name, f.length(), f.lastModified(), null, buf)
                 }
-                val writer = BatchWriter(db)
-                upsertFile(writer, p, parent, entry.name, ext, maxOf(0L, entry.size), entry.mtime, entry.mime, old, gen)
-                writer.flush()
+            } else {
+                val entry = runCatching { fs.stat(XId.file(p)) }.getOrNull() ?: return@withContext
+                isDir = entry.isDir
+                if (isDir) {
+                    if (IndexRules.skipDir(p, entry.name)) return@withContext
+                    val s = Session(fs, false, { true }, loadFiles(p), loadDirs(p))
+                    walkPrivileged(s, p, buf)
+                } else {
+                    val s = Session(fs, false, { true }, singleRow(p), emptyMap())
+                    handleFile(s, parent, p, entry.name, maxOf(0L, entry.size), entry.mtime, entry.mime, buf)
+                }
             }
+            flush(buf)
             markDirNonEmpty(parent)
-            publishStats(_stats.value.scanning, _stats.value.scanProgress)
+            refreshStatsLater()
         }
     }
 
-    /** 增量写入时沿用最近一次扫描代号，避免下次扫描前被当作“没见过”。 */
-    private fun currentGen(): Long =
-        db.rawQuery("SELECT MAX(seen) FROM dirs", null).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L }
-            .let { if (it > 0) it else System.currentTimeMillis() }
+    private fun singleRow(path: String): Map<String, OldRow> =
+        db.rawQuery("SELECT id, size, mtime, manual FROM files WHERE path = ?", arrayOf(path)).use { c ->
+            if (c.moveToFirst()) mapOf(path to OldRow(c.getLong(0), c.getLong(1), c.getLong(2), c.getInt(3) != 0)) else emptyMap()
+        }
 
     private fun markDirNonEmpty(dir: String) {
-        db.execSQL("UPDATE dirs SET empty = 0 WHERE path = ?", arrayOf<Any>(dir))
+        synchronized(writeLock) { db.execSQL("UPDATE dirs SET empty = 0 WHERE path = ?", arrayOf<Any>(dir)) }
     }
 
     /** 删除/移走后父目录可能变空：重新看一眼。 */
@@ -657,9 +853,8 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         val known = db.rawQuery("SELECT 1 FROM dirs WHERE path = ?", arrayOf(dir)).use { it.moveToFirst() }
         if (!known) return
         val empty = runCatching {
-            val f = File(dir)
-            val names = f.list()
-            if (names != null) {
+            val names = File(dir).list()
+            if (names != null && !isRestricted(dir)) {
                 names.none { it != ".nomedia" }
             } else {
                 val fs = Graph.fsRegistry.forScheme(XId.SCHEME_FILE)
@@ -667,10 +862,10 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
                 fs.list(e).none { it.name != ".nomedia" }
             }
         }.getOrNull() ?: return
-        db.execSQL("UPDATE dirs SET empty = ? WHERE path = ?", arrayOf<Any>(if (empty) 1 else 0, dir))
+        synchronized(writeLock) { db.execSQL("UPDATE dirs SET empty = ? WHERE path = ?", arrayOf<Any>(if (empty) 1 else 0, dir)) }
     }
 
-    // ------------------------------------------------------------------ 工具
+    // ================================================================== 工具
 
     private fun readRows(c: Cursor): List<IndexedFile> {
         val out = ArrayList<IndexedFile>(c.count.coerceAtLeast(0))
@@ -698,15 +893,26 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         private const val PREFS = "ai_file_index"
         private const val KEY_LAST_SCAN = "last_scan_at"
         private const val AUTO_SCAN_INTERVAL_MS = 30 * 60 * 1000L
+        private const val STATS_INTERVAL_MS = 300L
+        private const val PARALLEL = 4
+        private const val BATCH = 2000
+        private const val CHUNK = 400
         private const val MAX_DEPTH = 64
-        private const val MAX_LIMIT = 100_000
-        private const val QUICK_MIN_SIZE = 1024L * 1024
+        private const val MAX_LIMIT = 200_000
         private const val QUICK_CHUNK = 64 * 1024
         private const val COLS = "id, path, name, ext, size, mtime, mime, category, sub, source, tags, quick_hash"
+        private val RESTRICTED = Regex("/Android/data(/|$)")
 
         /** App 启动后调用一次：建立索引实例；距上次扫描超过 30 分钟会自动增量扫描。 */
         fun ensureStarted() {
             runCatching { AiGraph.index }
+        }
+
+        /** Android 11+ 普通 File 读不了，必须走特权通道的目录。 */
+        internal fun isRestricted(dir: String): Boolean = RESTRICTED.containsMatchIn(dir)
+
+        private fun bindOpt(st: android.database.sqlite.SQLiteStatement, i: Int, v: String?) {
+            if (v == null) st.bindNull(i) else st.bindString(i, v)
         }
 
         internal fun parseCategory(s: String?): Category =
@@ -718,25 +924,22 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         internal fun splitTags(s: String?): List<String> =
             if (s.isNullOrEmpty()) emptyList() else s.split(',').filter { it.isNotEmpty() }
 
-        /** 文件名拆成词给 FTS：分隔符变空格，便于 “2024”、“IMG” 等前缀命中。 */
-        internal fun ftsName(name: String): String =
-            name.replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
 
-        internal fun ftsTags(tags: List<String>): String =
-            tags.joinToString(" ") { ftsName(it) }
+        /** 文件名拆成词给 FTS：分隔符变空格，便于 “2024”、“IMG” 等前缀命中。 */
+        internal fun ftsName(name: String): String = name.replace(NON_WORD, " ").trim()
+
+        internal fun ftsTags(tags: List<String>): String = tags.joinToString(" ") { ftsName(it) }
 
         /** 一个搜索词 → FTS 前缀查询；没有可用字符返回 null。 */
         internal fun ftsQuery(token: String): String? {
-            val words = token.replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim().split(' ').filter { it.isNotEmpty() }
+            val words = token.replace(NON_WORD, " ").trim().split(' ').filter { it.isNotEmpty() }
             if (words.isEmpty()) return null
             return words.joinToString(" ") { "$it*" }
         }
 
         internal fun escapeLike(s: String): String =
             s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-        /** “目录下所有路径”的 LIKE 模式。 */
-        internal fun likePrefix(dir: String): String = escapeLike(dir.trimEnd('/')) + "/%"
 
         internal fun parentOf(path: String): String {
             val p = path.trimEnd('/')

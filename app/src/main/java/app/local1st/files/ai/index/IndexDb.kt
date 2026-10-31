@@ -6,8 +6,8 @@ import android.database.sqlite.SQLiteOpenHelper
 
 /**
  * 文件索引数据库。
- * - files：每个文件一行（path 唯一），seen 是最近一次扫描的代号，manual=1 表示分类被手动/AI 改过，重扫不覆盖。
- * - dirs：每个目录一行（mtime 用于增量跳过，empty 标记空目录）。
+ * - files：每个文件一行（path 唯一）。manual=1 表示分类被手动/AI 改过，重扫不覆盖。
+ * - dirs：每个目录一行（mtime 用于增量，empty 标记空目录）。
  * - files_fts：FTS4（name + tags），docid = files.id。
  */
 internal class IndexDb(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
@@ -38,13 +38,6 @@ internal class IndexDb(context: Context) : SQLiteOpenHelper(context, NAME, null,
                 seen INTEGER NOT NULL DEFAULT 0
             )"""
         )
-        db.execSQL("CREATE INDEX files_parent ON files(parent)")
-        db.execSQL("CREATE INDEX files_cat ON files(category, sub)")
-        db.execSQL("CREATE INDEX files_source ON files(source)")
-        db.execSQL("CREATE INDEX files_mtime ON files(mtime)")
-        db.execSQL("CREATE INDEX files_size ON files(size)")
-        db.execSQL("CREATE INDEX files_ext ON files(ext)")
-        db.execSQL("CREATE INDEX files_seen ON files(seen)")
         db.execSQL(
             """CREATE TABLE dirs (
                 path TEXT PRIMARY KEY,
@@ -53,45 +46,57 @@ internal class IndexDb(context: Context) : SQLiteOpenHelper(context, NAME, null,
                 seen INTEGER NOT NULL DEFAULT 0
             )"""
         )
-        db.execSQL("CREATE INDEX dirs_empty ON dirs(empty)")
         db.execSQL("CREATE VIRTUAL TABLE files_fts USING fts4(name, tags)")
+        createIndexes(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 1) {
+            db.execSQL("DROP TABLE IF EXISTS files")
+            db.execSQL("DROP TABLE IF EXISTS dirs")
+            db.execSQL("DROP TABLE IF EXISTS files_fts")
+            onCreate(db)
+            return
+        }
+        // v1 → v2：只换索引，保留数据
+        db.execSQL("DROP INDEX IF EXISTS files_seen")
+        db.execSQL("DROP INDEX IF EXISTS files_cat")
+        createIndexes(db)
+    }
+
+    override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS files")
         db.execSQL("DROP TABLE IF EXISTS dirs")
         db.execSQL("DROP TABLE IF EXISTS files_fts")
         onCreate(db)
     }
 
+    private fun createIndexes(db: SQLiteDatabase) {
+        // path 已有 UNIQUE 索引（也服务于前缀 LIKE / 精确查找）
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_parent ON files(parent)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_category ON files(category, mtime)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_sub ON files(sub)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_source ON files(source)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_mtime ON files(mtime)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_size ON files(size)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_ext ON files(ext)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS dirs_empty ON dirs(empty)")
+    }
+
     companion object {
         const val NAME = "ai_file_index.db"
-        const val VERSION = 1
+        const val VERSION = 2
     }
 }
 
-/** 每 [size] 条写操作提交一次事务。只能在同一个线程里用（SQLite 事务绑定线程）。 */
-internal class BatchWriter(private val db: SQLiteDatabase, private val size: Int = 500) {
-    private var pending = 0
-
-    fun op(block: (SQLiteDatabase) -> Unit) {
-        if (pending == 0) db.beginTransaction()
-        try {
-            block(db)
-        } catch (t: Throwable) {
-            // 单条失败不拖垮整批
-        }
-        pending++
-        if (pending >= size) flush()
-    }
-
-    fun flush() {
-        if (pending == 0) return
-        try {
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-            pending = 0
-        }
+/** 在一个事务里执行。 */
+internal inline fun <T> SQLiteDatabase.inTx(block: (SQLiteDatabase) -> T): T {
+    beginTransaction()
+    try {
+        val r = block(this)
+        setTransactionSuccessful()
+        return r
+    } finally {
+        endTransaction()
     }
 }

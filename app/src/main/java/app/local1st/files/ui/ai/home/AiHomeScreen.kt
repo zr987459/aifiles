@@ -53,6 +53,8 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -139,8 +141,9 @@ fun AiHomeScreen(nav: AiNav) {
     var volumes by remember { mutableStateOf<List<VolumeInfo>>(emptyList()) }
     var refreshTick by remember { mutableStateOf(0) }
 
-    // 指令弹窗
-    var sheet by remember { mutableStateOf<CmdSheet?>(null) }
+    // 数字只来自两个“稳定”来源：MediaStore（秒出）→ 最近一次“完成”的索引快照。
+    // 扫描中的半截计数不显示，避免来回跳；快照只在 scanning=false 时更新。
+    val snapshot = stableSnapshot(stats)
 
     LifecycleResumeEffect(Unit) {
         val now = hasStorageAccess(context)
@@ -157,91 +160,44 @@ fun AiHomeScreen(nav: AiNav) {
         interrupted = safeIo { AiGraph.executor.interrupted() }.getOrDefault(emptyList())
     }
 
-    // 存储卷与 MediaStore 计数：每次回到首页刷新一次（都在 IO 线程）
+    // 存储卷每次回到首页刷新；MediaStore 计数只在还没有完成的索引快照时查询（都在 IO 线程）
     LaunchedEffect(refreshTick, storageGranted) {
         volumes = safeIo { loadVolumes(context) }.getOrDefault(emptyList())
-        if (storageGranted) mediaCounts = safeIo { queryMediaCounts(context) }.getOrNull() ?: mediaCounts
-    }
-
-    // 快捷访问计数：索引可用用索引，否则 MediaStore
-    val indexReady = stats.lastScanAt > 0L && !stats.scanning && stats.totalFiles > 0
-    LaunchedEffect(indexReady, mediaCounts, stats.lastScanAt) {
-        quick = if (indexReady) {
-            safeIo {
-                val src = AiGraph.index.sourceApps()
-                QuickCounts(
-                    wechat = src["wechat"],
-                    qq = src["qq"],
-                    screenshot = stats.byCategory[Category.SCREENSHOT]?.count ?: 0,
-                    download = mediaCounts?.download ?: AiGraph.index.query(FileQuery(pathPrefix = "$ROOT/Download", limit = 100_000)).size,
-                )
-            }.getOrDefault(QuickCounts())
-        } else {
-            val m = mediaCounts
-            if (m == null) QuickCounts() else QuickCounts(m.wechat, m.qq, m.screenshot, m.download)
+        if (storageGranted && (mediaCounts == null || AiGraph.index.stats.value.lastScanAt == 0L)) {
+            mediaCounts = safeIo { queryMediaCounts(context) }.getOrNull() ?: mediaCounts
         }
     }
 
-    fun categoryCount(c: Category): Int? =
-        if (indexReady) stats.byCategory[c]?.count ?: 0 else mediaCounts?.byCategory?.get(c)
+    // 快捷访问：有完成的索引快照用索引，否则 MediaStore；快照不变就不重算
+    LaunchedEffect(snapshot?.lastScanAt, mediaCounts) {
+        val snap = snapshot
+        val m = mediaCounts
+        if (snap != null) {
+            safeIo {
+                val src = AiGraph.index.sourceApps()
+                QuickCounts(
+                    wechat = src["wechat"] ?: 0,
+                    qq = src["qq"] ?: 0,
+                    screenshot = snap.byCategory[Category.SCREENSHOT]?.count ?: 0,
+                    download = AiGraph.index.query(FileQuery(pathPrefix = "$ROOT/Download", limit = 100_000)).size,
+                )
+            }.getOrNull()?.let { quick = it }
+        } else if (m != null) {
+            quick = QuickCounts(m.wechat, m.qq, m.screenshot, m.download)
+        }
+    }
+
+    fun categoryCount(c: Category): Int? {
+        val snap = snapshot
+        return if (snap != null) snap.byCategory[c]?.count ?: 0 else mediaCounts?.byCategory?.get(c)
+    }
 
     fun submit() {
         val t = input.trim()
         if (t.isEmpty()) return
         keyboard?.hide()
-        if (!looksLikeCommand(t)) {
-            nav.open(AppScreen.AiViews(query = FileQuery(text = t), title = "搜索：$t"))
-            return
-        }
-        sheet = CmdSheet(raw = t)
-        scope.launch {
-            val r = safeIo { AiGraph.organizer.parseCommand(t) }
-            val cur = sheet ?: return@launch
-            if (cur.raw != t) return@launch
-            sheet = r.fold(
-                onSuccess = { cur.copy(parsing = false, intent = it) },
-                onFailure = { cur.copy(parsing = false, error = it.message ?: "解析失败") },
-            )
-        }
-    }
-
-    fun act() {
-        val s = sheet ?: return
-        val intent = s.intent ?: return
-        if (s.acting) return
-        if (intent.action == IntentAction.FIND) {
-            sheet = null
-            nav.open(AppScreen.AiViews(query = intent.query, title = intentTitle(intent)))
-            return
-        }
-        sheet = s.copy(acting = true, message = null)
-        scope.launch {
-            val res: Result<AppScreen?> = when (intent.action) {
-                IntentAction.CLEAN, IntentAction.TRASH -> if (!hasCondition(intent.query)) {
-                    Result.failure(IllegalArgumentException("条件太宽，请说清楚位置、类型、时间或大小"))
-                } else safeIo {
-                    val files = AiGraph.index.query(intent.query)
-                    if (files.isEmpty()) null else AppScreen.AiPlanReview(trashPlan(intent, files))
-                }
-                else -> safeIo {
-                    val plan = AiGraph.organizer.proposeOrganize(intent.query.pathPrefix, intent.raw)
-                    if (plan.actions.isEmpty()) null else AppScreen.AiPlanReview(plan)
-                }
-            }
-            val cur = sheet ?: return@launch
-            res.fold(
-                onSuccess = { screen ->
-                    if (screen == null) sheet = cur.copy(acting = false, message = "没有找到符合条件的文件")
-                    else { sheet = null; nav.open(screen) }
-                },
-                onFailure = { e ->
-                    sheet = cur.copy(
-                        acting = false,
-                        message = if (e is IllegalArgumentException) e.message else "出错了：" + (e.message ?: e.javaClass.simpleName),
-                    )
-                },
-            )
-        }
+        if (looksLikeCommand(t)) nav.open(AppScreen.AiAssistant(t))
+        else nav.open(AppScreen.AiViews(query = FileQuery(text = t), title = "搜索：$t"))
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -306,18 +262,30 @@ fun AiHomeScreen(nav: AiNav) {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { submit() }),
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(6.dp))
+                    FilledIconButton(
+                        onClick = {
+                            val t = input.trim()
+                            nav.open(AppScreen.AiAssistant(t.ifEmpty { null }))
+                        },
+                        modifier = Modifier.size(48.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    ) { Text("✨", style = MaterialTheme.typography.titleMedium) }
                     TooltipIconButton("设置", Icons.Outlined.Settings) { nav.open(AppScreen.AiSettings) }
                 }
 
                 // 7. 索引进度一行小字 + 小提示条
                 if (stats.scanning) {
-                    val pct = Regex("\\d{1,3}(\\.\\d+)?%").find(stats.scanProgress)?.value
                     Text(
-                        "正在建立索引" + (pct?.let { " $it" } ?: "…"),
+                        indexProgressText(stats.scanProgress, mediaCounts?.allFiles),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 16.dp, top = 0.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 16.dp),
                     )
                 }
                 if (!storageGranted) {
@@ -329,6 +297,9 @@ fun AiHomeScreen(nav: AiNav) {
                         nav.open(AppScreen.AiHistory)
                     }
                 }
+
+                // AI 助手入口卡片
+                AssistantCard { nav.open(AppScreen.AiAssistant()) }
 
                 // 2. 分类宫格
                 CategoryGrid({ categoryCount(it) }) { c -> nav.open(AppScreen.AiViews(viewKey = "cat:" + c.name, title = c.zh)) }
@@ -367,101 +338,43 @@ fun AiHomeScreen(nav: AiNav) {
             }
         }
     }
-
-    sheet?.let { s ->
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(onDismissRequest = { sheet = null }, sheetState = sheetState) {
-            CommandSheet(s, onAct = { act() }, onSearchInstead = {
-                sheet = null
-                nav.open(AppScreen.AiViews(query = FileQuery(text = s.raw), title = "搜索：" + s.raw))
-            })
-        }
-    }
 }
 
-// ================================================================= 指令弹窗
+// ================================================================= AI 助手卡片
 
-private data class CmdSheet(
-    val raw: String,
-    val parsing: Boolean = true,
-    val intent: CommandIntent? = null,
-    val error: String? = null,
-    val acting: Boolean = false,
-    val message: String? = null,
-)
-
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CommandSheet(s: CmdSheet, onAct: () -> Unit, onSearchInstead: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+private fun AssistantCard(onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(8.dp))
-            Text("“${s.raw}”", style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
-        val intent = s.intent
-        when {
-            s.parsing -> Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(10.dp))
-                Text("正在理解…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("✨", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "问问 AI：哪些文件能删？",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "AI 助手",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                )
             }
-            intent == null -> {
-                Text("没能理解这句话：" + (s.error ?: "解析失败"), color = MaterialTheme.colorScheme.error)
-                OutlinedButton(onClick = onSearchInstead) { Text("按文件名搜索") }
-            }
-            else -> {
-                Text("我理解为", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    intent.chips.ifEmpty { listOf("搜索：" + intent.raw) }.forEach { c ->
-                        AssistChip(
-                            onClick = {},
-                            label = { Text(c) },
-                            colors = if (intent.uncertain) {
-                                AssistChipDefaults.assistChipColors(containerColor = UncertainBg, labelColor = UncertainFg)
-                            } else AssistChipDefaults.assistChipColors(),
-                        )
-                    }
-                }
-                if (intent.uncertain) {
-                    Text(
-                        "不太确定，标黄的条件请核对；不对可以换个说法。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                s.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(onClick = onAct, enabled = !s.acting) {
-                        if (s.acting) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text(
-                            when (intent.action) {
-                                IntentAction.FIND -> "查看结果"
-                                IntentAction.CLEAN, IntentAction.TRASH -> "生成删除计划"
-                                IntentAction.ORGANIZE -> "生成整理计划"
-                            },
-                        )
-                    }
-                    if (intent.action == IntentAction.CLEAN || intent.action == IntentAction.TRASH) {
-                        Spacer(Modifier.width(10.dp))
-                        Text("先预览，只进回收站", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
+            Icon(
+                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
         }
     }
 }
-
-private val UncertainBg = Color(0xFFFFE082)
-private val UncertainFg = Color(0xFF3E2C00)
 
 // ================================================================= 宫格与快捷访问
 
@@ -616,7 +529,7 @@ private fun CleanBar(v: VolumeInfo, onClean: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                     modifier = Modifier.weight(1f),
                 )
-                Text("空间清理", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                Text("存储分析 / 清理", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
                 Icon(
                     Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                     contentDescription = null,
@@ -661,6 +574,7 @@ private data class MediaCounts(
     val qq: Int,
     val screenshot: Int,
     val download: Int,
+    val allFiles: Int,
 )
 
 private val DOC_EXTS = listOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "csv", "wps", "et", "dps", "epub", "mobi", "azw3", "odt", "ods", "odp", "ofd")
@@ -706,7 +620,7 @@ private fun queryMediaCounts(context: Context): MediaCounts {
             Category.IMAGE to images, Category.VIDEO to videos, Category.AUDIO to audio, Category.DOC to docs,
             Category.APK to apks, Category.ARCHIVE to archives, Category.SCREENSHOT to shots, Category.OTHER to other,
         ),
-        wechat = wechat, qq = qq, screenshot = shots, download = download,
+        wechat = wechat, qq = qq, screenshot = shots, download = download, allFiles = all,
     )
 }
 
@@ -739,6 +653,26 @@ private fun loadVolumes(context: Context): List<VolumeInfo> {
 
 // ================================================================= 工具
 
+/** 最近一次“扫描完成”的索引统计；扫描中保持上一次的值不变，从未完成过则为 null。 */
+@Composable
+private fun stableSnapshot(stats: IndexStats): IndexStats? {
+    // 普通持有者（非 State）：stats 变化本身就会触发重组，这里只是“记住最后一个完成值”，组合期间不写 State。
+    val holder = remember { arrayOfNulls<IndexStats>(1) }
+    if (!stats.scanning && stats.lastScanAt > 0L && stats.totalFiles > 0) holder[0] = stats
+    return holder[0]
+}
+
+/** “正在建立索引 35%”：scanProgress 自带百分比就用；否则按“已扫描 N”与 MediaStore 总数估算（封顶 99%）。 */
+private fun indexProgressText(progress: String, estimatedTotal: Int?): String {
+    Regex("\\d{1,3}(\\.\\d+)?%").find(progress)?.let { return "正在建立索引 " + it.value }
+    val scanned = Regex("已扫描\\s*(\\d+)").find(progress)?.groupValues?.get(1)?.toIntOrNull()
+    if (scanned != null && estimatedTotal != null && estimatedTotal > 0) {
+        val pct = (scanned * 100L / estimatedTotal).toInt().coerceIn(0, 99)
+        return "正在建立索引 $pct%"
+    }
+    return if (progress.isBlank()) "正在建立索引…" else "正在建立索引 · $progress"
+}
+
 /** 像指令（有动作 / 条件词）就走 AI 解析，否则当关键词搜文件名。 */
 private fun looksLikeCommand(t: String): Boolean {
     val keys = listOf(
@@ -756,33 +690,6 @@ private fun formatCount(n: Int): String = when {
     n < 10_000 -> n.toString()
     else -> String.format(Locale.ROOT, "%.1f", n / 10_000.0).removeSuffix(".0") + " 万"
 }
-
-private fun trashPlan(intent: CommandIntent, files: List<IndexedFile>): Plan = Plan(
-    planId = UUID.randomUUID().toString(),
-    kind = PlanKind.CLEAN,
-    title = "删除：" + intentTitle(intent),
-    instruction = intent.raw,
-    actions = files.mapIndexed { i, f ->
-        PlanAction(
-            actionId = i + 1,
-            type = ActionType.TRASH,
-            srcPath = f.path,
-            size = f.size,
-            reason = "符合指令：" + intent.raw,
-            risk = Risk.CONFIRM,
-            selected = !intent.uncertain,
-        )
-    },
-)
-
-/** 删除类指令至少要有一个限定条件。 */
-private fun hasCondition(q: FileQuery): Boolean =
-    !q.text.isNullOrBlank() || q.categories.isNotEmpty() || q.subCategory != null || q.sourceApp != null ||
-        !q.pathPrefix.isNullOrBlank() || q.exts.isNotEmpty() || q.minSize != null || q.maxSize != null ||
-        q.olderThanMs != null || q.newerThanMs != null
-
-private fun intentTitle(intent: CommandIntent): String =
-    intent.chips.filterNot { it.startsWith("动作：") }.joinToString(" · ").ifBlank { intent.raw }.take(40)
 
 private fun launchScan(scope: CoroutineScope) {
     scope.launch { safeIo { AiGraph.index.startScan(false) } }

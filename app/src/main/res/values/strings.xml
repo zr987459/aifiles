@@ -47,7 +47,7 @@
     <string name="add_location">Add location</string>
     <string name="remove_location">Remove location</string>
     <string name="locations">Locations</string>
-    <string name="locations_summary">Network folders from other apps. XFiles does not connect to the network; the other app does.</string>
+    <string name="locations_summary">Network folders from other apps. AI 文件 does not connect to the network; the other app does.</string>
     <string name="location_added">Added %1$s</string>
     <string name="location_removed">Removed %1$s</string>
     <string name="location_already_added">%1$s is already a location</string>
@@ -55,7 +55,7 @@
     <string name="location_pinned_local">Pinned %1$s as a favorite</string>
     <string name="location_grant_failed">Couldn’t add location: %1$s</string>
     <string name="location_guide_title">Adding a network location?</string>
-    <string name="location_guide_body">XFiles has no network permission, so it cannot open SFTP, SMB, WebDAV, Google Drive, or any other remote location itself.\n\nMount that location as a folder in another app first — RCX (rclone), Nextcloud, or any file app that appears in the system picker — then choose that folder here. XFiles copies the files; the other app is what goes online.</string>
+    <string name="location_guide_body">AI 文件 has no network permission, so it cannot open SFTP, SMB, WebDAV, Google Drive, or any other remote location itself.\n\nMount that location as a folder in another app first — RCX (rclone), Nextcloud, or any file app that appears in the system picker — then choose that folder here. AI 文件 copies the files; the other app is what goes online.</string>
     <string name="location_guide_continue">Choose a folder</string>
     <string name="location_guide_open">Open the full guide</string>
     <string name="location_guide_dont_remind">Don’t remind me next time</string>
@@ -102,12 +102,12 @@
     <string name="descending">Descending</string>
     <string name="descending_summary">Reverse the sort order</string>
     <string name="file_associations">File associations</string>
-    <string name="open_supported_archives_with_xfiles">Use XFiles to open any supported archive</string>
+    <string name="open_supported_archives_with_xfiles">Use AI 文件 to open any supported archive</string>
     <string name="supported_archives_summary">ZIP, JAR, APK, AAB, APKS, APKM, XAPK, 7Z, RAR, TAR, TAR.GZ/TGZ, TAR.BZ2/TBZ2, TAR.XZ/TXZ, GZ, BZ2, and XZ</string>
-    <string name="view_images_with_xfiles">Use XFiles to view images</string>
-    <string name="view_pdfs_with_xfiles">Use XFiles to view PDFs</string>
-    <string name="view_text_with_xfiles">Use XFiles to view text files</string>
-    <string name="play_videos_with_xfiles">Use XFiles to play videos</string>
+    <string name="view_images_with_xfiles">Use AI 文件 to view images</string>
+    <string name="view_pdfs_with_xfiles">Use AI 文件 to view PDFs</string>
+    <string name="view_text_with_xfiles">Use AI 文件 to view text files</string>
+    <string name="play_videos_with_xfiles">Use AI 文件 to play videos</string>
     <string name="root">Root</string>
     <string name="root_access">Root access</string>
     <string name="root_access_summary">Browse the whole system (su) or Android/data (Shizuku)</string>
@@ -130,10 +130,10 @@
     <string name="shizuku_help_show">How to start Shizuku</string>
     <string name="shizuku_help_hide">Hide Shizuku help</string>
     <string name="shizuku_help_title">Starting Shizuku</string>
-    <string name="shizuku_help_start">Open the Shizuku app and use its own “View command” or pairing flow. XFiles does not provide a start command because current versions keep the starter inside the Shizuku app.</string>
+    <string name="shizuku_help_start">Open the Shizuku app and use its own “View command” or pairing flow. AI 文件 does not provide a start command because current versions keep the starter inside the Shizuku app.</string>
     <string name="shizuku_help_restart">Shizuku must be restarted after every reboot unless the device is rooted. On Android 13+, it can auto-start on a trusted Wi-Fi network.</string>
     <string name="shizuku_help_oem">OEM setup:\n• ColorOS (OPPO/OnePlus): turn off “Permission monitoring”.\n• MIUI: enable “USB debugging (Security options)”.\n• Android 11+: enable “Disable adb authorization timeout”.</string>
-    <string name="shizuku_help_scope">Shizuku lets XFiles reach Android/data and Android/obb. It cannot reach /data/data or browse the whole filesystem; those require root.</string>
+    <string name="shizuku_help_scope">Shizuku lets AI 文件 reach Android/data and Android/obb. It cannot reach /data/data or browse the whole filesystem; those require root.</string>
     <string name="shizuku_app_not_available">Shizuku app is not available</string>
     <string name="about">About</string>
     <string name="app_tagline">Offline, open-source file manager. No network, no telemetry.</string>
@@ -242,7 +242,7 @@
     <string name="extracting_obb">Extracting OBB…</string>
     <string name="writing_apks">Writing APKs…</string>
     <string name="awaiting_install_confirmation">Waiting for confirmation…</string>
-    <string name="enable_unknown_apps">Enable ‘Install unknown apps’ for XFiles and retry</string>
+    <string name="enable_unknown_apps">Enable ‘Install unknown apps’ for AI 文件 and retry</string>
     <string name="install_failed">Install failed: %1$s</string>
     <string name="cannot_write">Cannot write to %1$s</string>
     <string name="cannot_create_folder_in">Cannot create folder in %1$s</string>

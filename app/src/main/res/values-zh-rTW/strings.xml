@@ -46,7 +46,7 @@
     <string name="add_location">新增位置</string>
     <string name="remove_location">移除位置</string>
     <string name="locations">位置</string>
-    <string name="locations_summary">來自其他應用程式的網路資料夾。XFiles 本身不連網，由該應用程式負責連線。</string>
+    <string name="locations_summary">來自其他應用程式的網路資料夾。AI 文件 本身不連網，由該應用程式負責連線。</string>
     <string name="location_added">已新增 %1$s</string>
     <string name="location_removed">已移除 %1$s</string>
     <string name="location_already_added">%1$s 已是位置</string>
@@ -54,9 +54,9 @@
     <string name="location_pinned_local">已將 %1$s 加入我的最愛</string>
     <string name="location_grant_failed">無法新增位置：%1$s</string>
     <string name="location_guide_title">要新增網路位置？</string>
-    <string name="location_guide_body">XFiles 沒有網路權限，無法自行連線 SFTP、SMB、WebDAV、Google Drive 或任何其他遠端位置。
+    <string name="location_guide_body">AI 文件 沒有網路權限，無法自行連線 SFTP、SMB、WebDAV、Google Drive 或任何其他遠端位置。
 
-請先在其他應用程式把該位置掛成資料夾——RCX（rclone）、Nextcloud，或任何會出現在系統選擇器中的檔案應用程式——再回到這裡選取它。複製仍由 XFiles 完成，連網的是對方應用程式。</string>
+請先在其他應用程式把該位置掛成資料夾——RCX（rclone）、Nextcloud，或任何會出現在系統選擇器中的檔案應用程式——再回到這裡選取它。複製仍由 AI 文件 完成，連網的是對方應用程式。</string>
     <string name="location_guide_continue">選擇資料夾</string>
     <string name="location_guide_open">開啟完整指南</string>
     <string name="location_guide_dont_remind">下次不要再提醒</string>
@@ -103,12 +103,12 @@
     <string name="descending">遞減</string>
     <string name="descending_summary">反轉排序順序</string>
     <string name="file_associations">檔案關聯</string>
-    <string name="open_supported_archives_with_xfiles">使用 XFiles 開啟任意支援的壓縮檔</string>
+    <string name="open_supported_archives_with_xfiles">使用 AI 文件 開啟任意支援的壓縮檔</string>
     <string name="supported_archives_summary">支援 ZIP、JAR、APK、AAB、APKS、APKM、XAPK、7Z、RAR、TAR、TAR.GZ/TGZ、TAR.BZ2/TBZ2、TAR.XZ/TXZ、GZ、BZ2 和 XZ</string>
-    <string name="view_images_with_xfiles">使用 XFiles 檢視圖片</string>
-    <string name="view_pdfs_with_xfiles">使用 XFiles 檢視 PDF</string>
-    <string name="view_text_with_xfiles">使用 XFiles 檢視文字檔</string>
-    <string name="play_videos_with_xfiles">使用 XFiles 播放影片</string>
+    <string name="view_images_with_xfiles">使用 AI 文件 檢視圖片</string>
+    <string name="view_pdfs_with_xfiles">使用 AI 文件 檢視 PDF</string>
+    <string name="view_text_with_xfiles">使用 AI 文件 檢視文字檔</string>
+    <string name="play_videos_with_xfiles">使用 AI 文件 播放影片</string>
     <string name="root">Root</string>
     <string name="root_access">Root 存取權</string>
     <string name="root_access_summary">瀏覽整個系統（su）或 Android/data（Shizuku）</string>
@@ -129,10 +129,10 @@
     <string name="shizuku_help_show">如何啟動 Shizuku</string>
     <string name="shizuku_help_hide">收合 Shizuku 說明</string>
     <string name="shizuku_help_title">啟動 Shizuku</string>
-    <string name="shizuku_help_start">開啟 Shizuku 應用程式，使用其內建的「檢視指令」或配對流程。XFiles 不提供啟動指令，因為目前版本的啟動入口都在 Shizuku 應用程式內。</string>
+    <string name="shizuku_help_start">開啟 Shizuku 應用程式，使用其內建的「檢視指令」或配對流程。AI 文件 不提供啟動指令，因為目前版本的啟動入口都在 Shizuku 應用程式內。</string>
     <string name="shizuku_help_restart">除非裝置已 root，否則每次重新開機後都必須重新啟動 Shizuku。Android 13 以上可在信任的 Wi-Fi 網路上自動啟動。</string>
     <string name="shizuku_help_oem">各廠商設定：\n• ColorOS（OPPO/OnePlus）：關閉「權限監控」。\n• MIUI：開啟「USB 偵錯（安全性設定）」。\n• Android 11 以上：開啟「停用 adb 授權逾時」。</string>
-    <string name="shizuku_help_scope">Shizuku 可讓 XFiles 存取 Android/data 與 Android/obb；無法存取 /data/data，也不能瀏覽整個檔案系統——那些需要 root。</string>
+    <string name="shizuku_help_scope">Shizuku 可讓 AI 文件 存取 Android/data 與 Android/obb；無法存取 /data/data，也不能瀏覽整個檔案系統——那些需要 root。</string>
     <string name="shizuku_app_not_available">找不到 Shizuku 應用程式</string>
     <string name="about">關於</string>
     <string name="app_tagline">離線、開放原始碼的檔案管理器。不使用網路，不收集遙測資料。</string>
@@ -244,7 +244,7 @@
     <string name="extracting_obb">正在解壓縮 OBB…</string>
     <string name="writing_apks">正在寫入 APK…</string>
     <string name="awaiting_install_confirmation">等待確認安裝…</string>
-    <string name="enable_unknown_apps">請為 XFiles 啟用「安裝未知應用程式」，然後再試一次</string>
+    <string name="enable_unknown_apps">請為 AI 文件 啟用「安裝未知應用程式」，然後再試一次</string>
     <string name="install_failed">安裝失敗：%1$s</string>
     <string name="cannot_write">無法寫入 %1$s</string>
     <string name="cannot_create_folder_in">無法在 %1$s 建立資料夾</string>

@@ -363,7 +363,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                                 vm.requestNewTextFile()
                             }
                             TooltipIconButton(
-                                "AI 整理",
+                                "AI 首页",
                                 Icons.Outlined.AutoAwesome,
                                 onClick = dropUnlessResumed { vm.openAi() },
                             )

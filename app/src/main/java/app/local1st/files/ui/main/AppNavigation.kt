@@ -24,6 +24,8 @@ sealed interface AppScreen {
     data class AiPlanReview(val plan: Plan) : AppScreen
     data object AiHistory : AppScreen
     data object AiSettings : AppScreen
+    /** AI 助手：对话式提问/指令（可带一句初始输入）。 */
+    data class AiAssistant(val initial: String? = null) : AppScreen
 }
 
 /** Stable identity lets Compose retain saveable UI state for screens below the current one. */

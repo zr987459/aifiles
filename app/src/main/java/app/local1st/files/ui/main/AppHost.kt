@@ -237,6 +237,7 @@ private fun AppScreenBody(vm: MainViewModel, entry: AppScreenEntry) {
         is AppScreen.AiPlanReview -> app.local1st.files.ui.ai.plan.AiPlanReviewScreen(aiNav(vm, entry), screen.plan)
         AppScreen.AiHistory -> app.local1st.files.ui.ai.history.AiHistoryScreen(aiNav(vm, entry))
         AppScreen.AiSettings -> app.local1st.files.ui.ai.settings.AiSettingsScreen(aiNav(vm, entry))
+        is AppScreen.AiAssistant -> app.local1st.files.ui.ai.assistant.AiAssistantScreen(aiNav(vm, entry), screen.initial)
     }
 }
 

@@ -98,6 +98,22 @@ interface FileIndex {
     suspend fun subCategories(category: Category): Map<String, Int>
     /** 所有被索引的空目录。 */
     suspend fun emptyDirs(): List<String>
+    /** 每个目录（含子目录）下已索引文件的总数与总大小。默认实现较慢，索引成员可覆盖。 */
+    suspend fun sizeUnder(dirs: List<String>): Map<String, CategoryStat> =
+        dirs.associateWith { d ->
+            val files = query(FileQuery(pathPrefix = d.trimEnd('/') + "/", limit = Int.MAX_VALUE))
+            CategoryStat(files.size, files.sumOf { it.size })
+        }
+    /** parent 的直接子目录按占用从大到小（用于“哪个文件夹最占空间”）。默认实现较慢，索引成员可覆盖。 */
+    suspend fun largestChildDirs(parent: String, limit: Int = 20): List<Pair<String, CategoryStat>> {
+        val p = parent.trimEnd('/') + "/"
+        return query(FileQuery(pathPrefix = p, limit = Int.MAX_VALUE))
+            .groupBy { p + it.path.removePrefix(p).substringBefore('/') }
+            .filterKeys { k -> k != p }
+            .map { (k, v) -> k to CategoryStat(v.size, v.sumOf { it.size }) }
+            .sortedByDescending { it.second.bytes }
+            .take(limit)
+    }
 }
 
 // ---------- 计划与执行 ----------

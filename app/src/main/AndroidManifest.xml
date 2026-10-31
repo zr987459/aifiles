@@ -21,7 +21,8 @@
     <!-- Install an app copied out of the App manager, including split (.apks/.apkm/.xapk) bundles -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- No INTERNET permission: XFiles is fully offline — no network, no telemetry. -->
+    <!-- AI 文件：仅在用户开启云端 AI 时联网，默认关闭。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Long-running file operations continue in a foreground service -->

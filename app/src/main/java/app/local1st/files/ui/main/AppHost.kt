@@ -224,8 +224,30 @@ private fun AppScreenBody(vm: MainViewModel, entry: AppScreenEntry) {
             transfer = screen.transfer,
             onBack = { vm.navigateBack(entry.id) },
         )
+
+        // ---- AI 文件管理（主控维护）----
+        AppScreen.AiHome -> app.local1st.files.ui.ai.home.AiHomeScreen(aiNav(vm, entry))
+        AppScreen.AiClean -> app.local1st.files.ui.ai.clean.AiCleanScreen(aiNav(vm, entry))
+        is AppScreen.AiViews -> app.local1st.files.ui.ai.views.AiViewsScreen(
+            nav = aiNav(vm, entry),
+            viewKey = screen.viewKey,
+            query = screen.query,
+            title = screen.title,
+        )
+        is AppScreen.AiPlanReview -> app.local1st.files.ui.ai.plan.AiPlanReviewScreen(aiNav(vm, entry), screen.plan)
+        AppScreen.AiHistory -> app.local1st.files.ui.ai.history.AiHistoryScreen(aiNav(vm, entry))
+        AppScreen.AiSettings -> app.local1st.files.ui.ai.settings.AiSettingsScreen(aiNav(vm, entry))
     }
 }
+
+private fun aiNav(vm: MainViewModel, entry: AppScreenEntry) = app.local1st.files.ui.ai.AiNav(
+    open = { vm.openAi(it) },
+    back = { vm.navigateBack(entry.id) },
+    openFile = { vm.openPath(it) },
+    reveal = { vm.revealInBrowser(it) },
+)
+
+
 
 /** Requests POST_NOTIFICATIONS once on Android 13+ so file-op progress is actually visible. */
 @Composable

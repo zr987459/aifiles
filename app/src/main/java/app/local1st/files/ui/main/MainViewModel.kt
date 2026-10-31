@@ -119,6 +119,24 @@ class MainViewModel : ViewModel() {
         navigation.navigate(AppScreen.Settings)
     }
 
+    // ---- AI 文件管理入口（主控维护）----
+    fun openAi(screen: AppScreen = AppScreen.AiHome) {
+        navigation.navigate(screen)
+    }
+
+    /** 关闭所有 AI 页面，回到浏览器并定位到该文件。 */
+    fun revealInBrowser(path: String) {
+        while (screenBackStack.size > 1) navigation.navigateBack()
+        activeCtrl.revealPath(app.local1st.files.core.fs.XId.file(path))
+    }
+
+    /** 用应用内查看器 / 外部应用打开该文件。 */
+    fun openPath(path: String) {
+        val fs = app.local1st.files.di.Graph.fsRegistry.forScheme(app.local1st.files.core.fs.XId.SCHEME_FILE)
+        val entry = runCatching { fs.stat(app.local1st.files.core.fs.XId.file(path)) }.getOrNull() ?: return
+        openEntry(activeCtrl, entry)
+    }
+
     private fun showViewer(request: ViewerRequest) {
         val replacingViewer = screenBackStack.last().screen is AppScreen.Viewer
         navigation.navigate(AppScreen.Viewer(request), replaceTop = replacingViewer)

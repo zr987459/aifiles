@@ -22,7 +22,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "app.local1st.files"
+        applicationId = "app.zr.aifiles"
         minSdk = 26
         targetSdk = 37
         versionCode = appBuildNumber

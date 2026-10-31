@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.automirrored.outlined.ArrowBackIos
 import androidx.compose.material.icons.automirrored.outlined.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
@@ -361,6 +362,11 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                             ) {
                                 vm.requestNewTextFile()
                             }
+                            TooltipIconButton(
+                                "AI 整理",
+                                Icons.Outlined.AutoAwesome,
+                                onClick = dropUnlessResumed { vm.openAi() },
+                            )
                             TooltipIconButton(
                                 stringResource(R.string.search),
                                 Icons.Outlined.Search,

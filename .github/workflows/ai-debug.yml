@@ -1,0 +1,45 @@
+name: AI test build
+
+# 功能分支每次推送都编译 debug APK，并更新预发布版 ai-nightly，方便手机直接下载测试。
+on:
+  push:
+    branches: ['feature/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ai-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug -PbuildNumber=${{ github.run_number }} --no-daemon
+      - name: Rename APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/*.apk out/AIFiles-test-${{ github.run_number }}.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: AIFiles-test-${{ github.run_number }}
+          path: out/*.apk
+          retention-days: 14
+      - name: Publish prerelease ai-nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ai-nightly -y --cleanup-tag || true
+          gh release create ai-nightly out/*.apk --prerelease --target "$GITHUB_SHA" \
+            --title "AI 文件 测试版 #${{ github.run_number }}" \
+            --notes "分支 ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7} 的测试包（debug 签名）。"

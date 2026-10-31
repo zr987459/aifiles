@@ -2,6 +2,8 @@ package app.local1st.files.ui.main
 
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import app.local1st.files.ai.FileQuery
+import app.local1st.files.ai.Plan
 import app.local1st.files.core.fs.XEntry
 import app.local1st.files.ui.viewer.ViewerRequest
 
@@ -13,6 +15,15 @@ sealed interface AppScreen {
     data class AppInfo(val packageName: String) : AppScreen
     data class Viewer(val request: ViewerRequest) : AppScreen
     data class DestinationPicker(val transfer: PendingTransfer) : AppScreen
+
+    // ---- AI 文件管理（主控维护）----
+    data object AiHome : AppScreen
+    data object AiClean : AppScreen
+    /** viewKey 为 SmartView.key；query 非空时直接显示该查询结果（如一句话搜索）。 */
+    data class AiViews(val viewKey: String? = null, val query: FileQuery? = null, val title: String? = null) : AppScreen
+    data class AiPlanReview(val plan: Plan) : AppScreen
+    data object AiHistory : AppScreen
+    data object AiSettings : AppScreen
 }
 
 /** Stable identity lets Compose retain saveable UI state for screens below the current one. */

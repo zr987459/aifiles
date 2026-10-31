@@ -58,7 +58,7 @@ internal class IndexDb(context: Context) : SQLiteOpenHelper(context, NAME, null,
             onCreate(db)
             return
         }
-        // v1 → v2：只换索引，保留数据
+        // v1 → v2 → v3：只换索引，保留数据
         db.execSQL("DROP INDEX IF EXISTS files_seen")
         db.execSQL("DROP INDEX IF EXISTS files_cat")
         createIndexes(db)
@@ -74,6 +74,8 @@ internal class IndexDb(context: Context) : SQLiteOpenHelper(context, NAME, null,
     private fun createIndexes(db: SQLiteDatabase) {
         // path 已有 UNIQUE 索引（也服务于前缀 LIKE / 精确查找）
         db.execSQL("CREATE INDEX IF NOT EXISTS files_parent ON files(parent)")
+        // 覆盖索引：sizeUnder / largestChildDirs 只读索引不回表
+        db.execSQL("CREATE INDEX IF NOT EXISTS files_path_size ON files(path, size)")
         db.execSQL("CREATE INDEX IF NOT EXISTS files_category ON files(category, mtime)")
         db.execSQL("CREATE INDEX IF NOT EXISTS files_sub ON files(sub)")
         db.execSQL("CREATE INDEX IF NOT EXISTS files_source ON files(source)")
@@ -85,7 +87,7 @@ internal class IndexDb(context: Context) : SQLiteOpenHelper(context, NAME, null,
 
     companion object {
         const val NAME = "ai_file_index.db"
-        const val VERSION = 2
+        const val VERSION = 3
     }
 }
 

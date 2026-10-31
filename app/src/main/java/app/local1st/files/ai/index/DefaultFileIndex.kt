@@ -3,6 +3,8 @@ package app.local1st.files.ai.index
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import android.os.StatFs
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.MimeTypeMap
 import app.local1st.files.ai.AiGraph
@@ -39,7 +41,13 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 文件索引（M2 / P1 提速）。
@@ -63,34 +71,63 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
     @Volatile
     private var scanJob: Job? = null
 
+    /** 特权通道 list 用的线程（带超时，卡住的线程被丢弃不影响扫描）。 */
+    private val privPool: ExecutorService = Executors.newCachedThreadPool { r ->
+        Thread(r, "ai-index-priv").apply { isDaemon = true }
+    }
+
     /** 串行化批量写（SQLite 本身也会串行，这里保证一个事务里只有一批）。 */
     private val writeLock = Any()
 
     init {
         Graph.appScope.launch(Dispatchers.IO) {
             runCatching {
+                // 先把上次扫描时间放出去（首页据此判断要不要首扫），再查分类计数
                 val last = prefs.getLong(KEY_LAST_SCAN, 0L)
+                _stats.update { it.copy(lastScanAt = last) }
                 publishStats(scanning = false, progress = "", lastScanAt = last)
-                if (System.currentTimeMillis() - last > AUTO_SCAN_INTERVAL_MS) startScan(false)
+                startScan(false) // 30 分钟内扫过会自己跳过
             }.onFailure { Log.w(TAG, "index init failed", it) }
         }
     }
 
     // ================================================================== 扫描
 
+    /**
+     * 同一时间只跑一个扫描。full=false（自动/增量）：上次扫描结束不到 30 分钟且库里有数据时直接跳过；
+     * full=true（手动“重新扫描”）：总是执行，并重写全部记录。
+     */
     override fun startScan(full: Boolean) {
         synchronized(scanLock) {
             if (scanJob?.isActive == true) return
             scanJob = Graph.appScope.launch(Dispatchers.IO) {
+                if (!full && recentlyScanned()) return@launch
                 val job = coroutineContext[Job]
+                var message = ""
                 try {
-                    runScan(full) { job?.isActive != false }
+                    message = runScan(full) { job?.isActive != false }
                 } catch (t: Throwable) {
                     Log.w(TAG, "scan failed", t)
-                    publishStats(scanning = false, progress = "扫描出错：${t.message ?: t.javaClass.simpleName}")
+                    message = "扫描出错：${t.message ?: t.javaClass.simpleName}"
+                } finally {
+                    // 无论成功、出错还是取消，都结束 scanning 并记下时间，避免首页反复触发
+                    val now = System.currentTimeMillis()
+                    runCatching { prefs.edit().putLong(KEY_LAST_SCAN, now).apply() }
+                    runCatching { publishStats(scanning = false, progress = message, lastScanAt = now) }
+                        .onFailure { _stats.update { it.copy(scanning = false, scanProgress = message, lastScanAt = now) } }
                 }
             }
         }
+    }
+
+    private fun recentlyScanned(): Boolean {
+        val last = prefs.getLong(KEY_LAST_SCAN, 0L)
+        if (last <= 0L || System.currentTimeMillis() - last >= AUTO_SCAN_INTERVAL_MS) return false
+        val hasRows = runCatching {
+            db.rawQuery("SELECT 1 FROM files LIMIT 1", null).use { it.moveToFirst() }
+        }.getOrDefault(false)
+        if (hasRows) _stats.update { it.copy(lastScanAt = last, scanning = false) }
+        return hasRows
     }
 
     private class OldRow(val id: Long, val size: Long, val mtime: Long, val manual: Boolean) {
@@ -104,7 +141,7 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
     private class FileRow(
         val path: String, val parent: String, val name: String, val ext: String,
         val size: Long, val mtime: Long, val mime: String?,
-        /** 库里已有的行；null 表示新文件。 */
+        /** 库里已有的行；0 表示新文件。 */
         val oldId: Long,
         /** null：手动分类，保留原分类只更新元数据。 */
         val cls: Classification?,
@@ -121,9 +158,13 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         val dirs: Map<String, OldDir>,
     ) {
         val counter = AtomicInteger()
+        val bytes = AtomicLong()
         @Volatile var current = ""
-        /** 列不出的目录：其下旧记录保留。 */
+        /** 列不出 / 超时的目录：其下旧记录保留。 */
         val failed = ConcurrentLinkedQueue<String>()
+        /** 特权通道总预算截止时间（uptime ms）。 */
+        @Volatile var privDeadline = Long.MAX_VALUE
+        val privTimeouts = AtomicInteger()
     }
 
     /** 每个协程自己的写缓冲。 */
@@ -133,21 +174,27 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         val size get() = files.size + dirs.size
     }
 
-    private suspend fun runScan(full: Boolean, alive: () -> Boolean) {
+    /** 返回结束时要显示的进度文字（正常完成为空）。阻塞部分都在 IO 线程。 */
+    private suspend fun runScan(full: Boolean, alive: () -> Boolean): String {
         val started = System.currentTimeMillis()
         val fs = Graph.fsRegistry.forScheme(XId.SCHEME_FILE)
         val volumes = runCatching { Graph.roots.currentMountedVolumes() }.getOrDefault(emptyList())
         _stats.update { it.copy(scanning = true, scanProgress = "准备扫描…") }
         val s = Session(fs, full, alive, loadFiles(null), loadDirs(null))
+        s.privDeadline = SystemClock.uptimeMillis() + PRIV_BUDGET_MS
 
-        // 顶层任务：每个卷根下的目录；卷根下的文件当场处理
+        // 进度估算：上次总文件数（或库里行数）；第一次扫描用 StatFs 已用空间
+        val estFiles = maxOf(prefs.getInt(KEY_LAST_TOTAL, 0), s.files.size)
+        val estBytes = if (estFiles > 0) 0L else volumes.sumOf { v ->
+            runCatching { StatFs(v.path).let { it.totalBytes - it.availableBytes } }.getOrDefault(0L)
+        }
+
         val tasks = ConcurrentLinkedQueue<Pair<String, Long>>()
         val rootBuf = Buf()
         for (v in volumes) {
             if (!alive()) break
             val root = v.path.trimEnd('/').ifEmpty { "/" }
-            val subdirs = processDir(s, root, File(root).lastModified(), rootBuf, isVolumeRoot = true)
-            tasks.addAll(subdirs)
+            tasks.addAll(processDir(s, root, File(root).lastModified(), rootBuf, isVolumeRoot = true))
         }
         flush(rootBuf)
 
@@ -156,8 +203,7 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
                 var n = 0
                 while (isActive) {
                     delay(STATS_INTERVAL_MS)
-                    val text = "已扫描 ${s.counter.get()} 个文件 · ${s.current}"
-                    // 分类计数每 ~1.5 秒查一次库，其余只更新进度文字
+                    val text = progressText(s, estFiles, estBytes)
                     if (++n % 5 == 0) publishStats(scanning = true, progress = text)
                     else _stats.update { it.copy(scanning = true, scanProgress = text) }
                 }
@@ -165,68 +211,87 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
             val workers = List(PARALLEL) {
                 launch(Dispatchers.IO) {
                     val buf = Buf()
-                    while (alive()) {
-                        val (dir, mtime) = tasks.poll() ?: break
-                        walkTree(s, dir, mtime, buf)
+                    try {
+                        while (alive()) {
+                            val (dir, mtime) = tasks.poll() ?: break
+                            walkTree(s, dir, mtime, buf)
+                        }
+                    } finally {
+                        runCatching { flush(buf) }
                     }
-                    flush(buf)
                 }
             }
             workers.forEach { it.join() }
             ticker.cancel()
         }
 
-        if (!alive()) {
-            publishStats(scanning = false, progress = "扫描已取消")
-            return
-        }
-        _stats.update { it.copy(scanning = true, scanProgress = "整理索引…") }
+        if (!alive()) return "扫描已取消"
+        _stats.update { it.copy(scanning = true, scanProgress = "99% · 整理索引…") }
         deleteUnseen(s)
-        val now = System.currentTimeMillis()
-        prefs.edit().putLong(KEY_LAST_SCAN, now).apply()
-        Log.i(TAG, "scan done: ${s.counter.get()} files in ${now - started} ms")
-        publishStats(scanning = false, progress = "", lastScanAt = now)
+        prefs.edit().putInt(KEY_LAST_TOTAL, s.counter.get()).apply()
+        Log.i(TAG, "scan done: ${s.counter.get()} files in ${System.currentTimeMillis() - started} ms, skipped ${s.failed.size} dirs")
+        return ""
+    }
+
+    private fun progressText(s: Session, estFiles: Int, estBytes: Long): String {
+        val n = s.counter.get()
+        val pct = when {
+            estFiles > 0 -> (n * 100L / estFiles).toInt()
+            estBytes > 0 -> (s.bytes.get() * 100 / estBytes).toInt()
+            else -> -1
+        }.coerceAtMost(99)
+        val head = if (pct >= 0) "$pct% · " else ""
+        return "${head}已扫描 $n 个文件 · ${s.current}"
     }
 
     /** 深度优先走完一棵子树（显式栈），阻塞执行。 */
     private fun walkTree(s: Session, rootDir: String, rootMtime: Long, buf: Buf) {
         val stack = ArrayDeque<Pair<String, Long>>()
         stack.addLast(rootDir to rootMtime)
-        var depth = 0
         while (stack.isNotEmpty()) {
             if (!s.alive()) return
             val (dir, mtime) = stack.removeLast()
-            depth = dir.count { it == '/' }
-            if (depth > MAX_DEPTH) continue
+            if (dir.count { it == '/' } > MAX_DEPTH) continue
             for (sub in processDir(s, dir, mtime, buf, isVolumeRoot = false)) stack.addLast(sub)
         }
     }
 
     /**
      * 处理一个目录：写它的文件与目录行，返回要继续走的子目录 (path, mtime)。
+     * 增量：目录 mtime 没变时，库里已有的文件只标记“见过”，不再 stat、不重写。
      * File 读不了时走特权通道（子树整体用特权通道走完，返回空）。
      */
     private fun processDir(s: Session, dir: String, mtime: Long, buf: Buf, isVolumeRoot: Boolean): List<Pair<String, Long>> {
         if (isRestricted(dir)) {
-            walkPrivileged(s, dir, buf)
+            walkPrivileged(s, dir, mtime, buf)
             return emptyList()
         }
         val names = File(dir).list()
         if (names == null) {
-            walkPrivileged(s, dir, buf)
+            walkPrivileged(s, dir, mtime, buf)
             return emptyList()
         }
         if (isVolumeRoot && names.isEmpty()) {
-            // 卷根空：多半是没权限，保留旧记录
-            s.failed += dir
+            s.failed += dir // 卷根空：多半是没权限，保留旧记录
             return emptyList()
         }
         s.current = dir
+        val old = s.dirs[dir]
+        val unchanged = !s.full && old != null && mtime > 0 && old.mtime == mtime
         val subdirs = ArrayList<Pair<String, Long>>()
         var empty = true
         for (name in names) {
             if (name != ".nomedia") empty = false
             val child = if (dir == "/") "/$name" else "$dir/$name"
+            if (unchanged) {
+                val known = s.files[child]
+                if (known != null) {
+                    known.seen = true
+                    s.counter.incrementAndGet()
+                    s.bytes.addAndGet(known.size)
+                    continue
+                }
+            }
             val attrs = try {
                 Files.readAttributes(Paths.get(child), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
             } catch (t: Throwable) {
@@ -243,24 +308,38 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         return subdirs
     }
 
-    /** 特权通道（Shizuku/root）走一棵子树。 */
-    private fun walkPrivileged(s: Session, rootDir: String, buf: Buf) {
-        val rootEntry = runCatching { s.fs.stat(XId.file(rootDir)) }.getOrNull()
-            ?: XEntry(id = XId.file(rootDir), name = rootDir.substringAfterLast('/'), isDir = true)
+    /** fs.list 带超时：超时 / 出错返回 null。卡住的线程被中断后由线程池回收。 */
+    private fun listWithTimeout(s: Session, entry: XEntry): List<XEntry>? {
+        val fut = privPool.submit(Callable { s.fs.list(entry) })
+        return try {
+            fut.get(PRIV_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            fut.cancel(true)
+            s.privTimeouts.incrementAndGet()
+            Log.w(TAG, "privileged list timed out: ${entry.path}")
+            null
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** 特权通道（Shizuku/root）走一棵子树：单目录 5 秒超时跳过，总预算用完后剩下的保留旧记录。 */
+    private fun walkPrivileged(s: Session, rootDir: String, rootMtime: Long, buf: Buf) {
         val stack = ArrayDeque<XEntry>()
-        stack.addLast(rootEntry)
+        stack.addLast(XEntry(id = XId.file(rootDir), name = rootDir.substringAfterLast('/'), isDir = true, mtime = rootMtime))
         while (stack.isNotEmpty()) {
             if (!s.alive()) return
             val d = stack.removeLast()
             val dir = d.path.trimEnd('/').ifEmpty { "/" }
             if (dir.count { it == '/' } > MAX_DEPTH) continue
-            val children = try {
-                s.fs.list(d)
-            } catch (t: Throwable) {
-                null
+            if (SystemClock.uptimeMillis() > s.privDeadline || s.privTimeouts.get() >= MAX_PRIV_TIMEOUTS) {
+                // 特权通道太慢或不可用：剩下的目录保留旧记录，下次再扫
+                s.failed += dir
+                continue
             }
+            val children = listWithTimeout(s, d)
             if (children == null || (children.isEmpty() && isRestricted(dir))) {
-                // 列不出，或受限目录列出空（多半是没授权）：保留旧记录，不算空目录
+                // 列不出 / 超时，或受限目录列出空（多半是没授权）：保留旧记录，不算空目录
                 s.failed += dir
                 continue
             }
@@ -282,6 +361,7 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         val ext = extOf(name)
         if (IndexRules.skipFile(parent, name, ext)) return
         s.counter.incrementAndGet()
+        s.bytes.addAndGet(size)
         val old = s.files[path]
         if (old != null) {
             old.seen = true
@@ -697,6 +777,37 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         out
     }
 
+    /** 每个目录（含子目录）下已索引文件的数量与总大小：path 区间 + 覆盖索引 (path, size)。 */
+    override suspend fun sizeUnder(dirs: List<String>): Map<String, CategoryStat> = withContext(Dispatchers.IO) {
+        val out = LinkedHashMap<String, CategoryStat>()
+        for (d in dirs) {
+            val p = d.trimEnd('/')
+            val (lo, hi) = if (p.isEmpty()) "/" to "0" else "$p/" to "${p}0"
+            out[d] = db.rawQuery(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files WHERE path > ? AND path < ?",
+                arrayOf(lo, hi),
+            ).use { c -> if (c.moveToFirst()) CategoryStat(c.getInt(0), c.getLong(1)) else CategoryStat(0, 0) }
+        }
+        out
+    }
+
+    /** parent 的直接子目录按占用从大到小（只算子目录，不含 parent 里直接放的文件）。 */
+    override suspend fun largestChildDirs(parent: String, limit: Int): List<Pair<String, CategoryStat>> = withContext(Dispatchers.IO) {
+        val p = parent.trimEnd('/')
+        val prefix = if (p.isEmpty()) "/" else "$p/"
+        val hi = if (p.isEmpty()) "0" else "${p}0"
+        val out = ArrayList<Pair<String, CategoryStat>>()
+        db.rawQuery(
+            "SELECT substr(rest, 1, instr(rest, '/') - 1) AS child, COUNT(*), COALESCE(SUM(size), 0) AS bytes " +
+                "FROM (SELECT substr(path, ?) AS rest, size FROM files WHERE path > ? AND path < ?) " +
+                "WHERE instr(rest, '/') > 0 GROUP BY child ORDER BY bytes DESC LIMIT ?",
+            arrayOf((prefix.length + 1).toString(), prefix, hi, limit.coerceIn(1, 10_000).toString()),
+        ).use { c ->
+            while (c.moveToNext()) out += (prefix + c.getString(0)) to CategoryStat(c.getInt(1), c.getLong(2))
+        }
+        out
+    }
+
     // ================================================================== 增量维护
 
     override suspend fun onMoved(oldPath: String, newPath: String) {
@@ -827,7 +938,7 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
                 if (isDir) {
                     if (IndexRules.skipDir(p, entry.name)) return@withContext
                     val s = Session(fs, false, { true }, loadFiles(p), loadDirs(p))
-                    walkPrivileged(s, p, buf)
+                    walkPrivileged(s, p, entry.mtime, buf)
                 } else {
                     val s = Session(fs, false, { true }, singleRow(p), emptyMap())
                     handleFile(s, parent, p, entry.name, maxOf(0L, entry.size), entry.mtime, entry.mime, buf)
@@ -894,6 +1005,10 @@ class DefaultFileIndex(private val context: Context) : FileIndex {
         private const val KEY_LAST_SCAN = "last_scan_at"
         private const val AUTO_SCAN_INTERVAL_MS = 30 * 60 * 1000L
         private const val STATS_INTERVAL_MS = 300L
+        private const val KEY_LAST_TOTAL = "last_total_files"
+        private const val PRIV_TIMEOUT_MS = 5_000L
+        private const val PRIV_BUDGET_MS = 120_000L
+        private const val MAX_PRIV_TIMEOUTS = 6
         private const val PARALLEL = 4
         private const val BATCH = 2000
         private const val CHUNK = 400

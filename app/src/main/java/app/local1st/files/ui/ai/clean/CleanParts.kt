@@ -145,6 +145,23 @@ internal fun CleanMediaTile(
                     .size(44.dp)
                     .clickable(onClick = onToggle),
             )
+            // 长按改成了选择，这里保留“在文件夹中定位”的入口。
+            IconButton(
+                onClick = onReveal,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .size(36.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.FolderOpen,
+                    stringResource(R.string.aiflow_reveal_in_folder),
+                    tint = Color.White,
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                        .padding(3.dp)
+                        .size(18.dp),
+                )
+            }
         }
     }
 }

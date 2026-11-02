@@ -2,6 +2,7 @@ package app.local1st.files.ui.main
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -27,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
@@ -94,11 +96,17 @@ fun AppHost(vm: MainViewModel) {
     LaunchedEffect(vm) {
         vm.snackbar.collect { snackbarHostState.showSnackbar(it) }
     }
-    if (sessionReady) RequestNotificationPermission()
     if (sessionReady) LegacySafGrantHost(vm)
     if (sessionReady) SafLocationPickerHost(vm)
 
-    val canGoBack = backStack.size > 1
+    // 返回键：AI 首页是最后一级（再按一次退出），不再预览“滑回”到还在加载的浏览器；
+    // 浏览器在栈底时逐级返回，见 RootBackHandler。
+    val topScreen = backStack.lastOrNull()?.screen
+    val onAiHome = topScreen == AppScreen.AiHome
+    val onBrowserRoot = backStack.size == 1 && topScreen == AppScreen.Browser
+    RootBackHandler(vm = vm, onBrowserRoot = onBrowserRoot, onAiHome = onAiHome)
+
+    val canGoBack = backStack.size > 1 && !onAiHome
     val gestureState = rememberNavigationEventState(
         currentInfo = NavigationEventInfo.None,
         backInfo = if (canGoBack) listOf(NavigationEventInfo.None) else emptyList(),
@@ -157,7 +165,17 @@ fun AppHost(vm: MainViewModel) {
     var rootShown by rememberSaveable { mutableStateOf(false) }
     val rootVisible = root != null && (root.id == front.id || root.id == rear?.id)
     if (rootVisible && !rootShown) SideEffect { rootShown = true }
-    val keepRootBehind = !rootShown && !rootVisible && root != null && root.screen is AppScreen.Browser
+    // 冷启动先让 AI 首页单独画出前两帧，再在底下组合隐藏的浏览器，首屏更快能点。
+    var hiddenRootAllowed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        withFrameNanos { }
+        hiddenRootAllowed = true
+    }
+    val keepRootBehind = hiddenRootAllowed && !rootShown && !rootVisible && root != null &&
+        root.screen is AppScreen.Browser
+    // 通知权限（用于文件操作进度）等到第一次进入文件浏览器才问，且只问一次，不在冷启动时挡住首页。
+    if (sessionReady && (rootShown || rootVisible)) RequestNotificationPermission()
 
     val layers = buildList {
         if (keepRootBehind) add(ScreenLayer(root!!, WindowPose(alpha = 0f), hidden = true))
@@ -292,11 +310,16 @@ private fun aiNav(vm: MainViewModel, entry: AppScreenEntry) = app.local1st.files
     openFile = { vm.openPath(it) },
     reveal = { vm.revealInBrowser(it) },
     openFiles = { paths, index -> paths.getOrNull(index)?.let { vm.openPath(it, paths) } },
+    home = { vm.openAi(AppScreen.AiHome) },
+    browse = { while (vm.screenBackStack.size > 1) vm.navigateBack() },
 )
 
 
 
-/** Requests POST_NOTIFICATIONS once on Android 13+ so file-op progress is actually visible. */
+/**
+ * Requests POST_NOTIFICATIONS on Android 13+ so file-op progress is actually visible. Asked at
+ * most once per install: a dismissed dialog no longer comes back on every cold start.
+ */
 @Composable
 private fun RequestNotificationPermission() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
@@ -309,9 +332,16 @@ private fun RequestNotificationPermission() {
             context,
             Manifest.permission.POST_NOTIFICATIONS,
         ) == PackageManager.PERMISSION_GRANTED
-        if (!granted) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        if (granted) return@LaunchedEffect
+        val prefs = context.getSharedPreferences(NAV_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_NOTIFICATION_ASKED, false)) return@LaunchedEffect
+        prefs.edit().putBoolean(KEY_NOTIFICATION_ASKED, true).apply()
+        runCatching { launcher.launch(Manifest.permission.POST_NOTIFICATIONS) }
     }
 }
+
+private const val NAV_PREFS = "nav_prefs"
+private const val KEY_NOTIFICATION_ASKED = "notification_permission_asked"
 
 /** Opens the system folder picker for Add location on every API level. */
 @Composable

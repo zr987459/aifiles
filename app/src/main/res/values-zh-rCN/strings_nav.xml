@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_ai_home">AI 首页</string>
+    <string name="nav_new">新建</string>
+    <string name="nav_switch_to_left_pane">切换到左栏</string>
+    <string name="nav_switch_to_right_pane">切换到右栏</string>
+    <string name="nav_press_back_again_to_exit">再按一次返回键退出</string>
+</resources>

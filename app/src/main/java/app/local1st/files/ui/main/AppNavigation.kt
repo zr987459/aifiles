@@ -57,6 +57,19 @@ internal class AppNavigationState {
     fun navigate(screen: AppScreen, replaceTop: Boolean = false): AppScreenEntry {
         val current = backStack.last()
         if (current.screen === screen) return current
+        // 连点同一个入口不会叠出两层一样的页面（大载荷页面只按引用比较，见 [isCheapToCompare]）。
+        if (isCheapToCompare(screen) && current.screen == screen) return current
+
+        // AI 首页只有一个，且总是紧贴在浏览器上面：从任何地方“回首页”都是退回到它，
+        // 而不是再压一层新的首页，这样返回键永远是“首页 → 退出”。
+        if (screen == AppScreen.AiHome) {
+            val existing = backStack.indexOfFirst { it.screen == AppScreen.AiHome }
+            if (existing >= 0) {
+                while (backStack.lastIndex > existing) backStack.removeAt(backStack.lastIndex)
+                return backStack[existing]
+            }
+            while (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
+        }
 
         val entry = AppScreenEntry(id = nextId++, screen = screen)
         if (replaceTop && backStack.size > 1) {
@@ -74,4 +87,18 @@ internal class AppNavigationState {
         backStack.removeAt(backStack.lastIndex)
         return true
     }
+
+    /** 关掉浏览器上面的所有页面，回到文件浏览器。 */
+    fun popToRoot() {
+        while (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
+    }
+
+    /** 当前最上面的页面。 */
+    val top: AppScreen get() = backStack.last().screen
+}
+
+/** 列表类载荷（查看器播放列表、待传输文件、整理计划）可能很大，不做逐项相等比较。 */
+private fun isCheapToCompare(screen: AppScreen): Boolean = when (screen) {
+    is AppScreen.Viewer, is AppScreen.DestinationPicker, is AppScreen.AiPlanReview -> false
+    else -> true
 }

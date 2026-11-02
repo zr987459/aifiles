@@ -14,4 +14,8 @@ class AiNav(
     val reveal: (String) -> Unit,
     /** 打开列表里第 index 个文件；图片/视频可在同列表的同类文件间左右滑动。 */
     val openFiles: (List<String>, Int) -> Unit = { paths, index -> paths.getOrNull(index)?.let(openFile) },
+    /** 回到 AI 首页（退回到已有的首页，不会再叠一层）。 */
+    val home: () -> Unit = { open(AppScreen.AiHome) },
+    /** 打开文件浏览器（双栏），关闭上面所有 AI 页面。底部导航“文件”用它。 */
+    val browse: () -> Unit = back,
 )

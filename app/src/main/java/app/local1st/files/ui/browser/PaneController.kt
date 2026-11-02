@@ -1270,6 +1270,36 @@ class PaneController(
         focusedDirId.value = paneFocus(if (entry.isContainer) entry.id else XId.parent(entry.id))
     }
 
+    /**
+     * 返回键的“逐级返回”目标：当前所在文件夹的上一级（按界面上的树形父级）。
+     * 已经停在顶层位置（存储卷、回收站等）、或画面还是启动缓存时返回 null。
+     */
+    private fun stepBackParentId(): String? {
+        if (startupRender.value != null) return null
+        val current = tree.value
+        val focus = focusedDirId.value ?: return null
+        if (current.roots.any { it.id == focus }) return null
+        if (findEntry(focus) == null) return null
+        return visualParentsOf(current.children)[focus]
+    }
+
+    /** True when [stepBack] would move: the focused folder is below a pane root. */
+    fun canStepBack(): Boolean = stepBackParentId() != null
+
+    /**
+     * 返回键逐级返回：收起当前所在文件夹，把焦点移到上一级并让被收起的那一行留在屏幕上。
+     * 已在顶层时什么也不做并返回 false，交给上层（回 AI 首页）。
+     */
+    fun stepBack(): Boolean {
+        val parentId = stepBackParentId() ?: return false
+        val focus = focusedDirId.value ?: return false
+        val entry = findEntry(focus) ?: return false
+        if (focus in tree.value.expanded) collapse(entry) else finishStartupRestoreForInteraction()
+        focusedDirId.value = paneFocus(parentId)
+        scrollTo.tryEmit(ScrollRequest(focus, animate = true))
+        return true
+    }
+
     /** Expand the ancestor chain of [id], then scroll to it. See [ScrollRequest] for [animate]. */
     fun revealPath(id: String, animate: Boolean = true) {
         finishStartupRestoreForInteraction()

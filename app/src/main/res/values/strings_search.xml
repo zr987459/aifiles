@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Search and settings screen texts (UX pass 1). Keys must match across locales. -->
+<resources>
+    <string name="ux_search_hint">Search files and folders</string>
+    <string name="ux_search_idle_hint">Type a name to search. One Chinese character is enough; letters and numbers need at least 2.\nOr just pick a type to list every file of that kind here.</string>
+    <string name="ux_search_type_all">All</string>
+    <string name="ux_search_type_folder">Folders</string>
+    <string name="ux_search_type_image">Images</string>
+    <string name="ux_search_type_video">Videos</string>
+    <string name="ux_search_type_audio">Audio</string>
+    <string name="ux_search_type_document">Documents</string>
+    <string name="ux_search_type_archive">Archives</string>
+    <string name="ux_search_type_apk">Installers (APK)</string>
+    <string name="ux_search_scope_here_and_below">This folder and subfolders</string>
+    <string name="ux_search_scope_here_only">This folder only</string>
+    <string name="ux_search_scope_storage">Whole storage</string>
+    <string name="ux_search_scope_label">Searching in: %1$s</string>
+    <string name="ux_search_failed">Search couldn\'t finish. Some folders may not be readable. Try another location.</string>
+    <string name="ux_search_too_many">Showing the first %1$d results. Type a more specific name to narrow it down.</string>
+    <string name="ux_search_no_results">Nothing found for “%1$s”</string>
+    <string name="ux_search_no_results_tip">Try a shorter word or another type.</string>
+    <string name="ux_search_no_results_tip_storage">Try a shorter word, or search the whole storage.</string>
+    <string name="ux_search_no_type_results">No files of this type here.</string>
+    <string name="ux_search_show_in_folder">Show in folder</string>
+    <string name="ux_settings_group_files">File list</string>
+    <string name="ux_settings_show_hidden_summary">Files whose names start with a dot, and folders the system hides</string>
+    <string name="ux_settings_descending">Reverse order</string>
+    <string name="ux_settings_descending_summary">For example Z to A, largest first, newest first</string>
+    <string name="ux_settings_dynamic_color">Match wallpaper colors</string>
+    <string name="ux_settings_dynamic_color_summary">Tint the app with colors from your wallpaper (Android 12 and later)</string>
+    <string name="ux_settings_group_open_with">Open files from other apps</string>
+    <string name="ux_settings_open_with_summary">When turned on, AI 文件 shows up as a choice when you open these files from other apps.</string>
+    <string name="ux_settings_group_network">Network folders</string>
+    <string name="ux_settings_add_network_folder">Add network folder</string>
+    <string name="ux_settings_remove_location_failed">Couldn\'t remove it. Please try again.</string>
+    <string name="ux_settings_group_system">Advanced: system files</string>
+    <string name="ux_settings_system_intro">Most people don\'t need this. It lets you see protected places such as Android/data, or system files on a rooted phone.</string>
+    <string name="ux_settings_system_access">Access protected files</string>
+    <string name="ux_settings_system_access_summary">Shows an extra entry on the home screen. Needs a rooted phone or the Shizuku app.</string>
+    <string name="ux_settings_read_only">View only (recommended)</string>
+    <string name="ux_settings_read_only_summary">Protected files can be viewed but not changed or deleted</string>
+    <string name="ux_settings_access_method">How to get access</string>
+    <string name="ux_settings_method_auto">Choose automatically</string>
+    <string name="ux_settings_method_su">Root</string>
+    <string name="ux_settings_method_shizuku">Shizuku</string>
+    <string name="ux_settings_method_off">Don\'t use</string>
+    <string name="ux_settings_method_summary">Shizuku is a free app that grants access without rooting the phone.</string>
+    <string name="ux_settings_access_status">In use: %1$s · Shizuku: %2$s</string>
+    <string name="ux_settings_access_none">Nothing</string>
+</resources>

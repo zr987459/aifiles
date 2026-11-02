@@ -1,5 +1,6 @@
 package app.local1st.files.ui.ai.assistant
 
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,17 +25,19 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -42,6 +45,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,14 +60,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import app.local1st.files.R
 import app.local1st.files.ai.AiGraph
 import app.local1st.files.ui.ai.AiNav
 import app.local1st.files.ui.components.TooltipIconButton
 import app.local1st.files.ui.main.AppScreen
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -79,9 +86,13 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
     val ready = remember(llmSettings) { runCatching { AiGraph.llm.isReady() }.getOrDefault(false) }
 
     var input by rememberSaveable { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    // 正在回答的那条占位消息 id；非 null 即“忙”
+    var activeId by remember { mutableStateOf<Long?>(null) }
+    var activeJob by remember { mutableStateOf<Job?>(null) }
+    val busy = activeId != null
     var runningKey by remember { mutableStateOf<String?>(null) }
     var initialSent by rememberSaveable { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     fun replace(id: Long, m: ChatMsg) {
@@ -96,21 +107,36 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
         keyboard?.hide()
         msgs.add(ChatMsg(AssistantSession.nextId(), true, t))
         val pid = AssistantSession.nextId()
-        msgs.add(ChatMsg(pid, false, "正在想…", pending = true))
-        busy = true
-        scope.launch {
+        val thinking = context.getString(if (isStorageQuestion(t)) R.string.aihome_thinking_storage else R.string.aihome_thinking)
+        msgs.add(ChatMsg(pid, false, thinking, pending = true))
+        activeId = pid
+        activeJob = scope.launch {
             try {
                 val reply = withContext(Dispatchers.IO) { answer(t) }
-                replace(pid, reply)
+                if (activeId == pid) replace(pid, reply)
             } catch (e: CancellationException) {
-                replace(pid, ChatMsg(pid, false, "已中断，可以再问一次。"))
+                if (msgs.any { it.id == pid && it.pending }) {
+                    replace(pid, ChatMsg(pid, false, context.getString(R.string.aihome_stopped), retry = t))
+                }
                 throw e
             } catch (e: Throwable) {
-                replace(pid, ChatMsg(pid, false, "出错了：" + (e.message ?: e.javaClass.simpleName)))
+                if (activeId == pid) replace(pid, errorMsg(context, pid, e, t))
             } finally {
-                busy = false
+                if (activeId == pid) {
+                    activeId = null
+                    activeJob = null
+                }
             }
         }
+    }
+
+    fun stop() {
+        val pid = activeId ?: return
+        activeJob?.cancel()
+        // 网络请求可能不会立刻响应取消：界面先结束“忙”，迟到的结果直接丢弃
+        replace(pid, ChatMsg(pid, false, context.getString(R.string.aihome_stopped), retry = msgs.lastOrNull { it.user }?.text))
+        activeId = null
+        activeJob = null
     }
 
     fun click(msg: ChatMsg, b: ChatButton) {
@@ -135,7 +161,11 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
                             if (s == null) Toast.makeText(context, a.emptyText, Toast.LENGTH_SHORT).show() else nav.open(s)
                         },
                         onFailure = { e ->
-                            Toast.makeText(context, "出错了：" + (e.message ?: e.javaClass.simpleName), Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.aihome_err_prefix, e.message ?: e.javaClass.simpleName),
+                                Toast.LENGTH_LONG,
+                            ).show()
                         },
                     )
                 }
@@ -146,7 +176,7 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
     LaunchedEffect(Unit) {
         // 上次离开时没回完的消息
         msgs.indices.reversed().forEach { i ->
-            if (msgs[i].pending) msgs[i] = msgs[i].copy(text = "已中断，可以再问一次。", pending = false)
+            if (msgs[i].pending) msgs[i] = msgs[i].copy(text = context.getString(R.string.aihome_stopped), pending = false)
         }
         if (!initialSent) {
             initialSent = true
@@ -162,20 +192,20 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
             TopAppBar(
                 title = {
                     Column {
-                        Text("AI 助手")
+                        Text(stringResource(R.string.aihome_assistant_title))
                         Text(
-                            if (ready) "云端 AI 已开启" else "本地模式",
+                            stringResource(if (ready) R.string.aihome_mode_cloud else R.string.aihome_mode_local),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },
-                navigationIcon = { TooltipIconButton("返回", Icons.AutoMirrored.Outlined.ArrowBack, onClick = nav.back) },
+                navigationIcon = { TooltipIconButton(stringResource(R.string.aihome_back), Icons.AutoMirrored.Outlined.ArrowBack, onClick = nav.back) },
                 actions = {
                     if (msgs.isNotEmpty()) {
-                        TooltipIconButton("清空对话", Icons.Outlined.DeleteSweep, enabled = !busy, onClick = { msgs.clear() })
+                        TooltipIconButton(stringResource(R.string.aihome_clear_chat), Icons.Outlined.DeleteSweep, enabled = !busy, onClick = { confirmClear = true })
                     }
-                    TooltipIconButton("AI 设置", Icons.Outlined.Settings, onClick = { nav.open(AppScreen.AiSettings) })
+                    TooltipIconButton(stringResource(R.string.aihome_ai_settings), Icons.Outlined.Settings, onClick = { nav.open(AppScreen.AiSettings) })
                 },
             )
         },
@@ -187,31 +217,38 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
                         .navigationBarsPadding()
                         .imePadding(),
                 ) {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(EXAMPLES) { ex ->
-                            SuggestionChip(onClick = { send(ex) }, enabled = !busy, label = { Text(ex) })
+                    if (input.isBlank() && !busy) {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(EXAMPLES) { ex ->
+                                SuggestionChip(onClick = { send(ex) }, label = { Text(ex) })
+                            }
                         }
                     }
                     Row(
-                        Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, bottom = 8.dp),
+                        Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         OutlinedTextField(
                             value = input,
                             onValueChange = { input = it.take(300) },
-                            placeholder = { Text("问我，或说一句指令") },
+                            placeholder = { Text(stringResource(R.string.aihome_input_hint)) },
                             maxLines = 4,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                             keyboardActions = KeyboardActions(onSend = { send(input) }),
                             shape = RoundedCornerShape(24.dp),
                             modifier = Modifier.weight(1f),
                         )
-                        IconButton(enabled = input.isNotBlank() && !busy, onClick = { send(input) }) {
-                            if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            else Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
+                        if (busy) {
+                            IconButton(onClick = { stop() }) {
+                                Icon(Icons.Outlined.Stop, contentDescription = stringResource(R.string.aihome_stop))
+                            }
+                        } else {
+                            IconButton(enabled = input.isNotBlank(), onClick = { send(input) }) {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.aihome_send))
+                            }
                         }
                     }
                 }
@@ -226,51 +263,68 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
         ) {
             item(key = "intro") {
                 Bubble(user = false) {
-                    Text(
-                        "你好！我能帮你找文件、看看哪些能删、整理文件夹。点下面的示例或直接说一句。" +
-                            if (ready) "" else "\n现在是本地模式，开通云端 AI 后建议会更聪明。",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                    Text(stringResource(R.string.aihome_intro), style = MaterialTheme.typography.bodyMedium)
                     if (!ready) {
                         Spacer(Modifier.height(8.dp))
-                        FilledTonalButton(onClick = { nav.open(AppScreen.AiSettings) }) { Text("开通 AI（更聪明）") }
+                        Text(
+                            stringResource(R.string.aihome_intro_local),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        FilledTonalButton(onClick = { nav.open(AppScreen.AiSettings) }) { Text(stringResource(R.string.aihome_ai_setup)) }
                     }
                 }
             }
             items(msgs, key = { it.id }) { m ->
-                Bubble(user = m.user) {
+                Bubble(user = m.user, error = m.error) {
                     if (!m.user && m.chips.isNotEmpty()) {
                         Text(
                             if (m.uncertain) "我理解为（不太确定，请核对）" else "我理解为",
                             style = MaterialTheme.typography.labelMedium,
                             color = if (m.uncertain) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                         )
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            m.chips.forEach { c -> AssistChip(onClick = {}, label = { Text(c, style = MaterialTheme.typography.labelSmall) }) }
-                        }
                         Spacer(Modifier.height(4.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            // 只是展示理解结果，不做成可点的样子
+                            m.chips.forEach { c -> Tag(c) }
+                        }
+                        Spacer(Modifier.height(6.dp))
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (m.pending) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.size(8.dp))
                         }
-                        Text(
-                            m.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (m.user) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                        )
+                        SelectionContainer {
+                            Text(
+                                m.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = when {
+                                    m.user -> MaterialTheme.colorScheme.onPrimaryContainer
+                                    m.error -> MaterialTheme.colorScheme.onErrorContainer
+                                    else -> MaterialTheme.colorScheme.onSurface
+                                },
+                            )
+                        }
                     }
                     m.note?.let {
                         Spacer(Modifier.height(4.dp))
                         Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (m.buttons.isNotEmpty()) {
+                    val retry = m.retry
+                    if (m.buttons.isNotEmpty() || retry != null) {
                         Spacer(Modifier.height(8.dp))
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
+                            if (retry != null) {
+                                FilledTonalButton(enabled = !busy, onClick = { send(retry) }) { Text(stringResource(R.string.aihome_retry)) }
+                            }
                             m.buttons.forEach { b ->
                                 val running = runningKey == "${m.id}:${b.label}"
                                 val enabled = runningKey == null
@@ -286,6 +340,55 @@ fun AiAssistantScreen(nav: AiNav, initial: String?) {
             }
         }
     }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text(stringResource(R.string.aihome_clear_chat_title)) },
+            text = { Text(stringResource(R.string.aihome_clear_chat_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClear = false
+                    msgs.clear()
+                }) { Text(stringResource(R.string.aihome_clear_chat_confirm)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.aihome_cancel)) } },
+        )
+    }
+}
+
+/** 出错回复：说人话的原因 + “再试一次”；Key / 额度类问题再给一个“检查 AI 设置”。 */
+private fun errorMsg(context: Context, id: Long, e: Throwable, question: String): ChatMsg {
+    val raw = (e.message ?: e.javaClass.simpleName).take(160)
+    val keyIssue = listOf("Key", "401", "403", "上限", "未开启").any { raw.contains(it) }
+    val net = listOf("超时", "无法连接", "网络", "timeout", "Unable to resolve").any { raw.contains(it, ignoreCase = true) }
+    val hint = when {
+        keyIssue -> context.getString(R.string.aihome_err_hint_key)
+        net -> context.getString(R.string.aihome_err_hint_net)
+        else -> null
+    }
+    val text = context.getString(R.string.aihome_err_prefix, raw) + (hint?.let { "\n$it" } ?: "")
+    val buttons = if (keyIssue) {
+        listOf(ChatButton(context.getString(R.string.aihome_check_settings), BtnAction.Open(AppScreen.AiSettings)))
+    } else {
+        emptyList()
+    }
+    return ChatMsg(id, false, text, buttons = buttons, error = true, retry = question)
+}
+
+@Composable
+private fun Tag(text: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+    }
 }
 
 @Composable
@@ -298,14 +401,18 @@ private fun BtnLabel(label: String, running: Boolean) {
 }
 
 @Composable
-private fun Bubble(user: Boolean, content: @Composable () -> Unit) {
+private fun Bubble(user: Boolean, error: Boolean = false, content: @Composable () -> Unit) {
     Box(Modifier.fillMaxWidth(), contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(
             shape = RoundedCornerShape(
                 topStart = 16.dp, topEnd = 16.dp,
                 bottomStart = if (user) 16.dp else 4.dp, bottomEnd = if (user) 4.dp else 16.dp,
             ),
-            color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = when {
+                user -> MaterialTheme.colorScheme.primaryContainer
+                error -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.surfaceContainerHigh
+            },
             modifier = Modifier.widthIn(max = 340.dp),
         ) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { content() }

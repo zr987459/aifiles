@@ -47,6 +47,10 @@ internal data class ChatMsg(
     val pending: Boolean = false,
     /** 小字备注，如“本地分析” / “AI 回答”。 */
     val note: String? = null,
+    /** 出错的回复：用错误色显示。 */
+    val error: Boolean = false,
+    /** 出错时可“再试一次”的原问题。 */
+    val retry: String? = null,
 )
 
 /** 进程内会话：从“查看文件”返回后对话还在。 */
@@ -91,7 +95,8 @@ private suspend fun intentReply(intent: CommandIntent): ChatMsg {
     val title = intentTitle(intent)
     val view = ChatButton("查看文件", BtnAction.Open(AppScreen.AiViews(query = q, title = title)), primary = true)
 
-    fun extra(list: List<ChatButton>) = if (ready) list else list + SETTINGS_BTN
+    // 本地模式下只在“没听懂 / 不太确定”时提示开通，避免每条回复都挂同一个按钮
+    fun extra(list: List<ChatButton>) = if (ready || (cond && !intent.uncertain)) list else list + SETTINGS_BTN
 
     return when (intent.action) {
         IntentAction.FIND -> {

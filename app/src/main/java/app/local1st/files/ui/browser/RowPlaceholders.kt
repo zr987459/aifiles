@@ -35,7 +35,9 @@ internal sealed interface PaneListItem {
         val parent: TreeNode,
         val kind: FolderPlaceholder,
     ) : PaneListItem {
-        override val key: String get() = "${parent.key}#hint"
+        // Entry keys always start with "|" (see PaneController.flatten), so this prefix can
+        // never equal one; a "#hint" suffix could, for a sibling literally named "<name>#hint".
+        override val key: String get() = "hint:${parent.key}"
     }
 }
 

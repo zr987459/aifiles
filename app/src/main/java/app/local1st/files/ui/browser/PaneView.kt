@@ -1,8 +1,11 @@
 package app.local1st.files.ui.browser
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,8 +23,10 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -43,6 +48,8 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -112,7 +119,18 @@ fun PaneView(
     // This state is first created only after PaneController has published the fully restored tree.
     // LazyColumn therefore lays out the restored row on its first frame; there is no row-0 frame
     // followed by a corrective scroll (animated or otherwise).
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialScrollIndex)
+    val selectionMode = state.selection.isNotEmpty()
+    // Entry rows plus the empty / loading / failed hints under open folders. Hints shift list
+    // positions, so node indexes are mapped through this list before scrolling.
+    val nodesForList = state.nodes
+    val withHints = !state.snapshotOnly
+    val listItems = remember(nodesForList, withHints) {
+        paneListItems(nodesForList, withHints)
+    }
+    val currentListItems by rememberUpdatedState(listItems)
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = listPositionOfNode(listItems, initialScrollIndex),
+    )
     val currentOnInitialLayoutReady by rememberUpdatedState(onInitialLayoutReady)
     // Covered destinations leave composition after the transition. Save these booleans with the
     // browser entry so returning from Settings/Search does not replay the lightweight-row phase.
@@ -143,8 +161,13 @@ fun PaneView(
 
     LaunchedEffect(controller, listState) {
         controller.scrollTo.collect { request ->
-            val index = controller.state.value.nodes.indexOfFirst { it.entry.id == request.id }
-            if (index < 0) return@collect
+            val nodeIndex = controller.state.value.nodes.indexOfFirst { it.entry.id == request.id }
+            if (nodeIndex < 0) return@collect
+            // Prefer the row as currently laid out; fall back to mapping the newest node index.
+            val items = currentListItems
+            val suffix = "|${request.id}"
+            val laidOut = items.indexOfFirst { it is PaneListItem.Entry && it.key.endsWith(suffix) }
+            val index = if (laidOut >= 0) laidOut else listPositionOfNode(items, nodeIndex)
             if (request.animate) listState.animateScrollToItem(index) else listState.scrollToItem(index)
         }
     }
@@ -164,8 +187,18 @@ fun PaneView(
                 .asPaddingValues().calculateTopPadding()
 
             if (state.loadingRoots && state.nodes.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     LoadingIndicator()
+                    Text(
+                        stringResource(R.string.rows_loading),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
                 }
             } else {
                 LazyColumn(
@@ -177,35 +210,78 @@ fun PaneView(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(
-                        count = state.nodes.size,
-                        key = { state.nodes[it].key },
-                    ) { index ->
-                        val node = state.nodes[index]
-                        EntryRow(
-                            node = node,
-                            selected = node.entry.id in state.selection,
-                            focused = node.entry.id == state.focusedDirId,
-                            onClick = {
-                                onActivate()
-                                onOpenEntry(node.entry)
-                            },
-                            onLongClick = {
-                                onActivate()
-                                onEntryMenu(node.entry)
-                            },
-                            onToggleSelect = {
-                                onActivate()
-                                controller.toggleSelect(node.entry)
-                            },
-                            enabled = !state.snapshotOnly,
-                            richContent = richRowsEnabled,
-                            modifier = Modifier
-                                .padding(horizontal = 4.dp)
-                                .then(
-                                    if (itemAnimationsEnabled) Modifier.animateItem()
-                                    else Modifier,
-                                ),
-                        )
+                        count = listItems.size,
+                        key = { listItems[it].key },
+                    ) { position ->
+                        val rowModifier = Modifier
+                            .padding(horizontal = 4.dp)
+                            .then(
+                                if (itemAnimationsEnabled) Modifier.animateItem()
+                                else Modifier,
+                            )
+                        when (val item = listItems[position]) {
+                            is PaneListItem.Hint -> FolderPlaceholderRow(
+                                parent = item.parent,
+                                kind = item.kind,
+                                enabled = !state.snapshotOnly,
+                                onRetry = {
+                                    onActivate()
+                                    controller.refresh(item.parent.entry.id)
+                                },
+                                modifier = rowModifier,
+                            )
+                            is PaneListItem.Entry -> {
+                                val node = state.nodes[item.index]
+                                val entry = node.entry
+                                val selectable = isSelectableEntry(entry)
+                                val selected = entry.id in state.selection
+                                EntryRow(
+                                    node = node,
+                                    selected = selected,
+                                    focused = entry.id == state.focusedDirId,
+                                    // While anything is ticked, a tap ticks; otherwise it opens.
+                                    onClick = {
+                                        onActivate()
+                                        if (selectionMode && selectable) {
+                                            controller.toggleSelect(entry)
+                                        } else {
+                                            onOpenEntry(entry)
+                                        }
+                                    },
+                                    // Long press starts (or extends) a multi-selection with this
+                                    // row ticked. Scaffolding rows (volumes, locations) have no
+                                    // selection, so they keep opening their menu.
+                                    onLongClick = {
+                                        onActivate()
+                                        if (selectable) {
+                                            if (!selected) controller.toggleSelect(entry)
+                                        } else {
+                                            onEntryMenu(entry)
+                                        }
+                                    },
+                                    onToggleSelect = {
+                                        onActivate()
+                                        controller.toggleSelect(entry)
+                                    },
+                                    enabled = !state.snapshotOnly,
+                                    richContent = richRowsEnabled,
+                                    selectionMode = selectionMode,
+                                    onMenu = {
+                                        onActivate()
+                                        onEntryMenu(entry)
+                                    },
+                                    onLeadingClick = if (selectionMode && entry.isContainer) {
+                                        {
+                                            onActivate()
+                                            onOpenEntry(entry)
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    modifier = rowModifier,
+                                )
+                            }
+                        }
                     }
                     item(key = "action:add-location") {
                         AddLocationRow(
@@ -333,11 +409,11 @@ private fun BreadcrumbBar(
             minHeight = CrumbBarHeight,
         ),
     ) {
+        // No horizontal scrolling here: on phones the panes sit in a HorizontalPager, and a
+        // scrollable trail fought the page swipe. Long trails collapse their middle into "…".
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .horizontalScroll(rememberScrollState(), reverseScrolling = true)
-                .padding(horizontal = 12.dp),
+            modifier = Modifier.padding(horizontal = 4.dp),
         ) {
             if (crumbs.isEmpty()) {
                 Text(
@@ -347,32 +423,107 @@ private fun BreadcrumbBar(
                     // Padded exactly like a crumb: the fallback and a real trail have to
                     // measure alike at every font scale, or the pill would resize (and jolt
                     // the list under it) every time the tree collapses back to the root.
-                    modifier = Modifier.padding(vertical = 4.dp, horizontal = 2.dp),
+                    modifier = Modifier.padding(vertical = 4.dp, horizontal = 8.dp),
                 )
             }
-            crumbs.forEachIndexed { index, (id, name) ->
+            val collapsed = crumbs.size > MAX_VISIBLE_CRUMBS
+            // First crumb, "…" for the middle, then the last two.
+            val hidden = if (collapsed) crumbs.subList(1, crumbs.size - 2) else emptyList()
+            val visible = if (collapsed) {
+                listOf(crumbs.first()) + crumbs.subList(crumbs.size - 2, crumbs.size)
+            } else {
+                crumbs
+            }
+            visible.forEachIndexed { index, (id, name) ->
                 if (index > 0) {
-                    Icon(
-                        Icons.Outlined.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(16.dp),
+                    CrumbSeparator()
+                }
+                if (collapsed && index == 1) {
+                    HiddenCrumbs(hidden = hidden, active = active, onCrumbClick = onCrumbClick)
+                    CrumbSeparator()
+                }
+                val isLast = index == visible.lastIndex
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .then(
+                            // The current folder takes what is left and ellipsizes; earlier
+                            // crumbs are capped so one long name cannot push it out.
+                            if (isLast) Modifier.weight(1f, fill = false)
+                            else Modifier.widthIn(max = CrumbMaxWidth),
+                        )
+                        // 48dp wide at least; the 40dp pill's height is extended to a 48dp
+                        // touch target by Compose since nothing else is tappable above/below.
+                        .widthIn(min = CrumbMinTouch)
+                        .heightIn(min = CrumbBarHeight)
+                        .clip(RoundedCornerShape(CrumbBarHeight / 2))
+                        .clickable(role = Role.Button) { onCrumbClick(id) }
+                        .padding(horizontal = 8.dp),
+                ) {
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = when {
+                            isLast && active -> MaterialTheme.colorScheme.primary
+                            isLast -> MaterialTheme.colorScheme.onSecondaryContainer
+                            !active -> MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                 }
-                Text(
-                    name,
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = when {
-                        index == crumbs.lastIndex && active -> MaterialTheme.colorScheme.primary
-                        index == crumbs.lastIndex -> MaterialTheme.colorScheme.onSecondaryContainer
-                        !active -> MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        }
+    }
+}
+
+private const val MAX_VISIBLE_CRUMBS = 3
+private val CrumbMaxWidth = 120.dp
+private val CrumbMinTouch = 48.dp
+
+@Composable
+private fun CrumbSeparator() {
+    Icon(
+        Icons.Outlined.ChevronRight,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.outline,
+        modifier = Modifier.size(16.dp),
+    )
+}
+
+/** "…" crumb: lists the collapsed middle of the path; picking one jumps there. */
+@Composable
+private fun HiddenCrumbs(
+    hidden: List<Pair<String, String>>,
+    active: Boolean,
+    onCrumbClick: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(width = CrumbMinTouch, height = CrumbBarHeight)
+                .clip(RoundedCornerShape(CrumbBarHeight / 2))
+                .clickable(role = Role.Button) { open = true },
+        ) {
+            Icon(
+                Icons.Outlined.MoreHoriz,
+                contentDescription = stringResource(R.string.rows_show_full_path),
+                tint = if (active) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            hidden.forEach { (id, name) ->
+                DropdownMenuItem(
+                    text = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    onClick = {
+                        open = false
+                        onCrumbClick(id)
                     },
-                    modifier = Modifier
-                        .clickable { onCrumbClick(id) }
-                        .padding(vertical = 4.dp, horizontal = 1.dp),
                 )
             }
         }

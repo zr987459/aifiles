@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">更多操作</string>
+    <string name="rows_empty_folder">文件夹是空的</string>
+    <string name="rows_loading">正在加载…</string>
+    <string name="rows_load_failed">打不开这个文件夹</string>
+    <string name="rows_retry">重试</string>
+    <string name="rows_show_full_path">显示完整路径</string>
+</resources>

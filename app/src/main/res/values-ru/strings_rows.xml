@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Другие действия</string>
+    <string name="rows_empty_folder">Эта папка пуста</string>
+    <string name="rows_loading">Загрузка…</string>
+    <string name="rows_load_failed">Не удалось открыть эту папку</string>
+    <string name="rows_retry">Повторить</string>
+    <string name="rows_show_full_path">Показать остальную часть пути</string>
+</resources>

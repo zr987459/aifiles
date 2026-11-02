@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Más acciones</string>
+    <string name="rows_empty_folder">Esta carpeta está vacía</string>
+    <string name="rows_loading">Cargando…</string>
+    <string name="rows_load_failed">No se pudo abrir esta carpeta</string>
+    <string name="rows_retry">Reintentar</string>
+    <string name="rows_show_full_path">Mostrar el resto de la ruta</string>
+</resources>

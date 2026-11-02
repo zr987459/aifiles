@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">その他の操作</string>
+    <string name="rows_empty_folder">このフォルダは空です</string>
+    <string name="rows_loading">読み込み中…</string>
+    <string name="rows_load_failed">このフォルダを開けませんでした</string>
+    <string name="rows_retry">再試行</string>
+    <string name="rows_show_full_path">パスの残りを表示</string>
+</resources>

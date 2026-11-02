@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Altre azioni</string>
+    <string name="rows_empty_folder">Questa cartella è vuota</string>
+    <string name="rows_loading">Caricamento…</string>
+    <string name="rows_load_failed">Impossibile aprire questa cartella</string>
+    <string name="rows_retry">Riprova</string>
+    <string name="rows_show_full_path">Mostra il resto del percorso</string>
+</resources>

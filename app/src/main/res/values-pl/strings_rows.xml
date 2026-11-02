@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Więcej działań</string>
+    <string name="rows_empty_folder">Ten folder jest pusty</string>
+    <string name="rows_loading">Wczytywanie…</string>
+    <string name="rows_load_failed">Nie udało się otworzyć tego folderu</string>
+    <string name="rows_retry">Ponów</string>
+    <string name="rows_show_full_path">Pokaż resztę ścieżki</string>
+</resources>

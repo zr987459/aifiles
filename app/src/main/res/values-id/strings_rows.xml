@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Tindakan lainnya</string>
+    <string name="rows_empty_folder">Folder ini kosong</string>
+    <string name="rows_loading">Memuat…</string>
+    <string name="rows_load_failed">Tidak dapat membuka folder ini</string>
+    <string name="rows_retry">Coba lagi</string>
+    <string name="rows_show_full_path">Tampilkan sisa jalur</string>
+</resources>

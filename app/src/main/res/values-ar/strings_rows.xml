@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">إجراءات أخرى</string>
+    <string name="rows_empty_folder">هذا المجلد فارغ</string>
+    <string name="rows_loading">جارٍ التحميل…</string>
+    <string name="rows_load_failed">تعذّر فتح هذا المجلد</string>
+    <string name="rows_retry">إعادة المحاولة</string>
+    <string name="rows_show_full_path">عرض بقية المسار</string>
+</resources>

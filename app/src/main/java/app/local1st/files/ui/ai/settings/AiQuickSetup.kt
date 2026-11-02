@@ -343,7 +343,16 @@ internal fun AiQuickSetup(settings: LlmSettings) {
                     ) { Text(stringResource(if (active) R.string.aihome_save_and_test else R.string.aihome_test_enable)) }
                     if (active) {
                         Spacer(Modifier.width(8.dp))
-                        TextButton(enabled = !working, onClick = { editing = false; result = null; apiKey = "" }) {
+                        TextButton(enabled = !working, onClick = {
+                            // 取消＝放弃本次未保存的修改，回到已保存的服务商/地址/模型，避免之后“再测一次”把放弃的改动写进去
+                            editing = false
+                            result = null
+                            apiKey = ""
+                            presetId = presetOf(settings).id
+                            baseUrl = settings.baseUrl
+                            model = settings.model
+                            showAdvanced = false
+                        }) {
                             Text(stringResource(R.string.aihome_cancel))
                         }
                     }

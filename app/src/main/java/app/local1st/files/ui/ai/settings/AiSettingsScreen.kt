@@ -494,7 +494,7 @@ private fun normalizePath(raw: String): String {
     return p
 }
 
-private fun requestAllFilesAccess(context: Context) {
+internal fun requestAllFilesAccess(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
     val intent = Intent(
         Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,

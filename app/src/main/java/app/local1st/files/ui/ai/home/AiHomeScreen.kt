@@ -1,6 +1,7 @@
 package app.local1st.files.ui.ai.home
 
 import android.content.Context
+import android.os.Build
 import android.os.StatFs
 import android.os.storage.StorageManager
 import android.provider.MediaStore
@@ -33,7 +34,6 @@ import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.History
@@ -48,27 +48,18 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SdStorage
 import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -85,25 +76,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import app.local1st.files.ai.ActionType
+import app.local1st.files.R
 import app.local1st.files.ai.AiGraph
 import app.local1st.files.ai.Category
-import app.local1st.files.ai.CommandIntent
 import app.local1st.files.ai.FileQuery
 import app.local1st.files.ai.IndexStats
-import app.local1st.files.ai.IndexedFile
-import app.local1st.files.ai.IntentAction
-import app.local1st.files.ai.Plan
-import app.local1st.files.ai.PlanAction
-import app.local1st.files.ai.PlanKind
 import app.local1st.files.ai.PlanRecord
-import app.local1st.files.ai.Risk
 import app.local1st.files.ui.ai.AiNav
+import app.local1st.files.ui.ai.assistant.EXAMPLES
+import app.local1st.files.ui.ai.settings.requestAllFilesAccess
 import app.local1st.files.ui.components.TooltipIconButton
 import app.local1st.files.ui.main.AppScreen
 import app.local1st.files.ui.main.hasStorageAccess
@@ -115,7 +102,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
-import java.util.UUID
 
 private const val ROOT = "/storage/emulated/0"
 private const val DAY = 86_400_000L
@@ -123,15 +109,22 @@ private const val DAY = 86_400_000L
 // ================================================================= 首页
 
 /**
- * AI 文件唯一的首页（U2）：搜索/指令框 → 分类宫格 → 快捷访问 → 存储位置 → 空间清理条，底部导航 最近 / 文件 / 历史。
+ * AI 文件首页。层级（从上到下）：
+ * 1. 一句话框（输入时给出“搜文件名 / 交给 AI”两个明确选项）+ 历史 + 设置
+ * 2. 状态提示（权限 / 中断 / 索引进度）
+ * 3. “试试对 AI 说”示例（唯一的助手入口，替代原来的 ✨ 按钮和助手卡片）
+ * 4. 存储概览卡（用量 + 清理空间 + 浏览全部文件，其他存储卷并在卡内）
+ * 5. 分类宫格  6. 常用位置（微信 / QQ / 下载 / 最近 7 天）
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AiHomeScreen(nav: AiNav) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val stats by AiGraph.index.stats.collectAsState()
+    val llmSettings by AiGraph.llm.settings.collectAsState()
+    val aiReady = remember(llmSettings) { runCatching { AiGraph.llm.isReady() }.getOrDefault(false) }
 
     var input by rememberSaveable { mutableStateOf("") }
     var storageGranted by remember { mutableStateOf(hasStorageAccess(context)) }
@@ -168,7 +161,7 @@ fun AiHomeScreen(nav: AiNav) {
         }
     }
 
-    // 快捷访问：有完成的索引快照用索引，否则 MediaStore；快照不变就不重算
+    // 常用位置：有完成的索引快照用索引，否则 MediaStore；快照不变就不重算
     LaunchedEffect(snapshot?.lastScanAt, mediaCounts) {
         val snap = snapshot
         val m = mediaCounts
@@ -178,12 +171,12 @@ fun AiHomeScreen(nav: AiNav) {
                 QuickCounts(
                     wechat = src["wechat"] ?: 0,
                     qq = src["qq"] ?: 0,
-                    screenshot = snap.byCategory[Category.SCREENSHOT]?.count ?: 0,
                     download = AiGraph.index.query(FileQuery(pathPrefix = "$ROOT/Download", limit = 100_000)).size,
+                    recent = AiGraph.index.query(FileQuery(newerThanMs = 7 * DAY, limit = 100_000)).size,
                 )
             }.getOrNull()?.let { quick = it }
         } else if (m != null) {
-            quick = QuickCounts(m.wechat, m.qq, m.screenshot, m.download)
+            quick = QuickCounts(m.wechat, m.qq, m.download, m.recent)
         }
     }
 
@@ -192,42 +185,29 @@ fun AiHomeScreen(nav: AiNav) {
         return if (snap != null) snap.byCategory[c]?.count ?: 0 else mediaCounts?.byCategory?.get(c)
     }
 
+    fun searchByName(t: String) {
+        keyboard?.hide()
+        nav.open(AppScreen.AiViews(query = FileQuery(text = t), title = "搜索：$t"))
+    }
+
+    fun askAi(t: String?) {
+        keyboard?.hide()
+        nav.open(AppScreen.AiAssistant(t?.trim()?.ifEmpty { null }))
+    }
+
     fun submit() {
         val t = input.trim()
         if (t.isEmpty()) return
-        keyboard?.hide()
-        if (looksLikeCommand(t)) nav.open(AppScreen.AiAssistant(t))
-        else nav.open(AppScreen.AiViews(query = FileQuery(text = t), title = "搜索：$t"))
+        if (looksLikeCommand(t)) askAi(t) else searchByName(t)
+    }
+
+    fun grantStorage() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) requestAllFilesAccess(context)
+        else nav.open(AppScreen.AiSettings)
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-        Scaffold(
-            containerColor = MaterialTheme.colorScheme.surface,
-            bottomBar = {
-                NavigationBar {
-                    NavigationBarItem(
-                        selected = false,
-                        onClick = {
-                            nav.open(AppScreen.AiViews(query = FileQuery(newerThanMs = 7 * DAY), title = "最近 7 天"))
-                        },
-                        icon = { Icon(Icons.Outlined.Schedule, contentDescription = null) },
-                        label = { Text("最近") },
-                    )
-                    NavigationBarItem(
-                        selected = true,
-                        onClick = {},
-                        icon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                        label = { Text("文件") },
-                    )
-                    NavigationBarItem(
-                        selected = false,
-                        onClick = { nav.open(AppScreen.AiHistory) },
-                        icon = { Icon(Icons.Outlined.History, contentDescription = null) },
-                        label = { Text("历史") },
-                    )
-                }
-            },
-        ) { padding ->
+        Scaffold(containerColor = MaterialTheme.colorScheme.surface) { padding ->
             Column(
                 Modifier
                     .fillMaxSize()
@@ -237,17 +217,19 @@ fun AiHomeScreen(nav: AiNav) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Spacer(Modifier.height(4.dp))
-                // 1. 搜索 / 指令框 + 设置
+                // 1. 一句话框 + 历史 + 设置
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextField(
                         value = input,
-                        onValueChange = { input = it },
+                        onValueChange = { input = it.take(300) },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("搜索文件，或告诉 AI 要做什么", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = {
+                            Text(stringResource(R.string.aihome_search_hint), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
                         leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                         trailingIcon = {
                             if (input.isNotEmpty()) {
-                                TooltipIconButton("清除", Icons.Outlined.Close) { input = "" }
+                                TooltipIconButton(stringResource(R.string.aihome_clear), Icons.Outlined.Close) { input = "" }
                             }
                         },
                         singleLine = true,
@@ -262,22 +244,38 @@ fun AiHomeScreen(nav: AiNav) {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { submit() }),
                     )
-                    Spacer(Modifier.width(6.dp))
-                    FilledIconButton(
-                        onClick = {
-                            val t = input.trim()
-                            nav.open(AppScreen.AiAssistant(t.ifEmpty { null }))
-                        },
-                        modifier = Modifier.size(48.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                        ),
-                    ) { Text("✨", style = MaterialTheme.typography.titleMedium) }
-                    TooltipIconButton("设置", Icons.Outlined.Settings) { nav.open(AppScreen.AiSettings) }
+                    TooltipIconButton(stringResource(R.string.aihome_history), Icons.Outlined.History) { nav.open(AppScreen.AiHistory) }
+                    TooltipIconButton(stringResource(R.string.aihome_ai_settings), Icons.Outlined.Settings) { nav.open(AppScreen.AiSettings) }
                 }
 
-                // 7. 索引进度一行小字 + 小提示条
+                // 输入中：两个明确的去向，不再让用户猜“回车会去哪”
+                val typed = input.trim()
+                if (typed.isNotEmpty()) {
+                    val preferAi = looksLikeCommand(typed)
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(20.dp)) {
+                        Column {
+                            val shown = typed.take(16) + if (typed.length > 16) "…" else ""
+                            val ai: @Composable () -> Unit = {
+                                ChoiceRow(Icons.Outlined.AutoAwesome, stringResource(R.string.aihome_ask_ai, shown), highlight = preferAi) { askAi(typed) }
+                            }
+                            val name: @Composable () -> Unit = {
+                                ChoiceRow(Icons.Outlined.Search, stringResource(R.string.aihome_search_name, shown), highlight = !preferAi) { searchByName(typed) }
+                            }
+                            if (preferAi) { ai(); HorizontalDivider(); name() } else { name(); HorizontalDivider(); ai() }
+                        }
+                    }
+                }
+
+                // 2. 状态提示
+                if (!storageGranted) {
+                    TipBar(stringResource(R.string.aihome_perm_tip), stringResource(R.string.aihome_perm_action), warn = true) { grantStorage() }
+                }
+                if (interrupted.isNotEmpty()) {
+                    val n = interrupted.size
+                    TipBar(if (n > 1) "上次操作被中断（$n 个计划）" else "上次操作被中断", "去历史", warn = true) {
+                        nav.open(AppScreen.AiHistory)
+                    }
+                }
                 if (stats.scanning) {
                     Text(
                         indexProgressText(stats.scanProgress, mediaCounts?.allFiles),
@@ -288,24 +286,50 @@ fun AiHomeScreen(nav: AiNav) {
                         modifier = Modifier.padding(start = 16.dp),
                     )
                 }
-                if (!storageGranted) {
-                    TipBar("没有“所有文件访问”权限，无法扫描文件", "去授权", warn = false) { nav.open(AppScreen.AiSettings) }
-                }
-                if (interrupted.isNotEmpty()) {
-                    val n = interrupted.size
-                    TipBar(if (n > 1) "上次操作被中断（$n 个计划）" else "上次操作被中断", "去历史", warn = true) {
-                        nav.open(AppScreen.AiHistory)
+
+                // 3. 试试对 AI 说（唯一的助手入口）
+                if (typed.isEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                stringResource(R.string.aihome_try_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (!aiReady) {
+                                TextButton(onClick = { nav.open(AppScreen.AiSettings) }) { Text(stringResource(R.string.aihome_ai_setup)) }
+                            } else {
+                                TextButton(onClick = { askAi(null) }) { Text(stringResource(R.string.aihome_open_assistant)) }
+                            }
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            EXAMPLES.forEach { ex -> SuggestionChip(onClick = { askAi(ex) }, label = { Text(ex) }) }
+                        }
+                        if (!aiReady) {
+                            Text(
+                                stringResource(R.string.aihome_local_mode),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
 
-                // AI 助手入口卡片
-                AssistantCard { nav.open(AppScreen.AiAssistant()) }
+                // 4. 存储概览（含清理入口）
+                if (volumes.isNotEmpty()) {
+                    StorageCard(volumes, onClean = { nav.open(AppScreen.AiClean) }, onBrowse = { nav.back() })
+                }
 
-                // 2. 分类宫格
+                // 5. 分类宫格
+                SectionTitle(stringResource(R.string.aihome_categories))
                 CategoryGrid({ categoryCount(it) }) { c -> nav.open(AppScreen.AiViews(viewKey = "cat:" + c.name, title = c.zh)) }
 
-                // 3. 快捷访问
-                SectionTitle("快捷访问")
+                // 6. 常用位置（截图已在分类里，不再重复）
+                SectionTitle(stringResource(R.string.aihome_quick))
+                val recentTitle = stringResource(R.string.aihome_recent)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     QuickTile(Modifier.weight(1f), "微信", Icons.Outlined.Chat, Color(0xFF07C160), quick.wechat) {
                         nav.open(AppScreen.AiViews(query = FileQuery(sourceApp = "wechat"), title = "微信"))
@@ -313,65 +337,95 @@ fun AiHomeScreen(nav: AiNav) {
                     QuickTile(Modifier.weight(1f), "QQ", Icons.Outlined.Forum, Color(0xFF12B7F5), quick.qq) {
                         nav.open(AppScreen.AiViews(query = FileQuery(sourceApp = "qq"), title = "QQ"))
                     }
-                    QuickTile(Modifier.weight(1f), "截屏", Icons.Outlined.Screenshot, Color(0xFF7E57C2), quick.screenshot) {
-                        nav.open(AppScreen.AiViews(query = FileQuery(categories = setOf(Category.SCREENSHOT)), title = "截屏"))
-                    }
                     QuickTile(Modifier.weight(1f), "下载", Icons.Outlined.Download, Color(0xFF1E88E5), quick.download) {
                         nav.open(AppScreen.AiViews(query = FileQuery(pathPrefix = "$ROOT/Download"), title = "下载"))
                     }
-                }
-
-                // 4. 存储位置
-                if (volumes.isNotEmpty()) {
-                    SectionTitle("存储位置")
-                    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(20.dp)) {
-                        Column {
-                            volumes.forEach { v -> VolumeRow(v) { nav.back() } }
-                        }
+                    QuickTile(Modifier.weight(1f), stringResource(R.string.aihome_recent_short), Icons.Outlined.Schedule, Color(0xFF7E57C2), quick.recent) {
+                        nav.open(AppScreen.AiViews(query = FileQuery(newerThanMs = 7 * DAY), title = recentTitle))
                     }
                 }
 
-                // 5. 空间清理条
-                volumes.firstOrNull { it.primary }?.let { v -> CleanBar(v) { nav.open(AppScreen.AiClean) } }
-
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
 }
 
-// ================================================================= AI 助手卡片
+@Composable
+private fun ChoiceRow(icon: ImageVector, text: String, highlight: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (highlight) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+// ================================================================= 存储概览
 
 @Composable
-private fun AssistantCard(onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("✨", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
+private fun StorageCard(volumes: List<VolumeInfo>, onClean: () -> Unit, onBrowse: () -> Unit) {
+    val context = LocalContext.current
+    val primary = volumes.firstOrNull { it.primary } ?: volumes.first()
+    val others = volumes.filter { it !== primary }
+    val used = (primary.total - primary.free).coerceAtLeast(0)
+    val frac = if (primary.total > 0) (used.toFloat() / primary.total).coerceIn(0f, 1f) else 0f
+    val low = frac > 0.9f
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.PhoneAndroid, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(primary.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Text(
-                    "问问 AI：哪些文件能删？",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    "AI 助手",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                    stringResource(R.string.aihome_storage_free, fmtSize(context, primary.free)),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Icon(
-                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            LinearProgressIndicator(
+                progress = { frac },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                color = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                drawStopIndicator = {},
             )
+            Text(
+                if (low) stringResource(R.string.aihome_storage_low)
+                else stringResource(R.string.aihome_storage_used, fmtSize(context, used), fmtSize(context, primary.total)),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilledTonalButton(onClick = onClean) { Text(stringResource(R.string.aihome_clean)) }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = onBrowse) { Text(stringResource(R.string.aihome_browse)) }
+            }
+            if (others.isNotEmpty()) {
+                HorizontalDivider()
+                others.forEach { v -> VolumeRow(v, onBrowse) }
+            }
         }
     }
 }
@@ -470,7 +524,7 @@ private fun SectionTitle(text: String) {
     Text(text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
 }
 
-// ================================================================= 存储位置与清理条
+// ================================================================= 存储卷
 
 private data class VolumeInfo(val path: String, val label: String, val primary: Boolean, val total: Long, val free: Long)
 
@@ -481,7 +535,7 @@ private fun VolumeRow(v: VolumeInfo, onClick: () -> Unit) {
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -511,46 +565,6 @@ private fun VolumeRow(v: VolumeInfo, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CleanBar(v: VolumeInfo, onClean: () -> Unit) {
-    val context = LocalContext.current
-    val used = (v.total - v.free).coerceAtLeast(0)
-    val frac = if (v.total > 0) used.toFloat() / v.total else 0f
-    Surface(
-        onClick = onClean,
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        shape = RoundedCornerShape(20.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "已用 ${fmtSize(context, used)}",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.weight(1f),
-                )
-                Text("存储分析 / 清理", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
-                Icon(
-                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-            }
-            LinearProgressIndicator(
-                progress = { frac.coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                color = if (frac > 0.9f) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.15f),
-                drawStopIndicator = {},
-            )
-        }
-    }
-}
-
-@Composable
 private fun TipBar(text: String, actionText: String, warn: Boolean, onAction: () -> Unit) {
     val bg = if (warn) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer
     val fg = if (warn) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onTertiaryContainer
@@ -566,7 +580,7 @@ private fun TipBar(text: String, actionText: String, warn: Boolean, onAction: ()
 
 // ================================================================= 数据（全部在 IO 线程调用）
 
-private data class QuickCounts(val wechat: Int? = null, val qq: Int? = null, val screenshot: Int? = null, val download: Int? = null)
+private data class QuickCounts(val wechat: Int? = null, val qq: Int? = null, val download: Int? = null, val recent: Int? = null)
 
 private data class MediaCounts(
     val byCategory: Map<Category, Int>,
@@ -574,6 +588,7 @@ private data class MediaCounts(
     val qq: Int,
     val screenshot: Int,
     val download: Int,
+    val recent: Int,
     val allFiles: Int,
 )
 
@@ -615,12 +630,14 @@ private fun queryMediaCounts(context: Context): MediaCounts {
             "OR _data LIKE '%/Pictures/QQ/%' OR _data LIKE '%/Download/QQ/%'",
     )
     val download = count("_data LIKE '$ROOT/Download/%' AND format != 12289")
+    val weekAgoSec = (System.currentTimeMillis() - 7 * DAY) / 1000
+    val recent = count("${MediaStore.MediaColumns.DATE_MODIFIED} >= $weekAgoSec AND format != 12289 AND _display_name LIKE '%.%'")
     return MediaCounts(
         byCategory = mapOf(
             Category.IMAGE to images, Category.VIDEO to videos, Category.AUDIO to audio, Category.DOC to docs,
             Category.APK to apks, Category.ARCHIVE to archives, Category.SCREENSHOT to shots, Category.OTHER to other,
         ),
-        wechat = wechat, qq = qq, screenshot = shots, download = download, allFiles = all,
+        wechat = wechat, qq = qq, screenshot = shots, download = download, recent = recent, allFiles = all,
     )
 }
 

@@ -1,6 +1,15 @@
 package app.local1st.files.ui.ai.plan
 
 import android.widget.Toast
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import app.local1st.files.R
+import app.local1st.files.ui.ai.views.prettyPath
+import app.local1st.files.ui.main.AppScreen
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -98,19 +107,43 @@ private fun groupKeyOf(a: PlanAction): String = when (a.type) {
     ActionType.TRASH -> "移入回收站"
 }
 
-private fun describe(a: PlanAction): Pair<String, String> {
+/** 分组标题：说清楚这一组会去哪。 */
+@Composable
+private fun groupTitleOf(a: PlanAction): String = when (a.type) {
+    ActionType.MOVE -> stringResource(R.string.aiflow_group_move_to, prettyPath((a.destDir ?: "?").trimEnd('/')))
+    ActionType.RENAME -> stringResource(R.string.aiflow_group_rename)
+    ActionType.MKDIR -> stringResource(R.string.aiflow_group_mkdir)
+    ActionType.TRASH -> stringResource(R.string.aiflow_group_trash)
+}
+
+/** 一个动作的 文件名 + “从哪 / 到哪” 两行。 */
+@Composable
+private fun describeLines(a: PlanAction): Triple<String, String?, String?> {
     val src = a.srcPath.orEmpty()
     return when (a.type) {
         ActionType.MOVE -> {
-            val dest = (a.destDir ?: "?").trimEnd('/') + "/" + (a.destName ?: nameOf(src))
-            nameOf(src) to "$src → $dest"
+            val newName = a.destName?.takeIf { it != nameOf(src) }
+            Triple(
+                nameOf(src),
+                stringResource(R.string.aiflow_line_from, prettyPath(parentOf(src))),
+                stringResource(R.string.aiflow_line_to, prettyPath((a.destDir ?: "?").trimEnd('/'))) +
+                    (newName?.let { " · " + stringResource(R.string.aiflow_line_new_name, it) } ?: ""),
+            )
         }
-        ActionType.RENAME -> nameOf(src) to "$src → ${parentOf(src).trimEnd('/')}/${a.destName ?: "?"}"
+        ActionType.RENAME -> Triple(
+            nameOf(src),
+            stringResource(R.string.aiflow_line_in, prettyPath(parentOf(src))),
+            stringResource(R.string.aiflow_line_new_name, a.destName ?: "?"),
+        )
         ActionType.MKDIR -> {
             val dir = (a.destDir ?: "").trimEnd('/') + (a.destName?.let { "/$it" } ?: "")
-            nameOf(dir).ifEmpty { dir } to "新建 $dir"
+            Triple(nameOf(dir).ifEmpty { dir }, stringResource(R.string.aiflow_line_create, prettyPath(dir)), null)
         }
-        ActionType.TRASH -> nameOf(src) to "$src → 回收站"
+        ActionType.TRASH -> Triple(
+            nameOf(src),
+            stringResource(R.string.aiflow_line_in, prettyPath(parentOf(src))),
+            stringResource(R.string.aiflow_line_trash),
+        )
     }
 }
 
@@ -127,6 +160,7 @@ fun AiPlanReviewScreen(nav: AiNav, plan: Plan) {
     var validateTick by remember { mutableStateOf(0) }
     var suggestedRule by remember { mutableStateOf<OrganizeRule?>(null) }
     var executedPlan by remember { mutableStateOf<Plan?>(null) }
+    var confirmOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(plan.planId, validateTick) {
         phase = Phase.Validating
@@ -154,7 +188,7 @@ fun AiPlanReviewScreen(nav: AiNav, plan: Plan) {
     val selectable = actions.filterNot { isBlocked(it) }
     val chosen = actions.filter { checked[it.actionId] == true && !isBlocked(it) }
     val chosenBytes = chosen.sumOf { it.size }
-    val hasTrash = chosen.any { it.type == ActionType.TRASH }
+    val impact = remember(chosen) { planImpactOf(chosen) }
     val running = phase is Phase.Running || phase is Phase.Undoing
 
     BackHandler(enabled = running) { /* 执行中不允许离开，避免中断批次。 */ }
@@ -232,17 +266,28 @@ fun AiPlanReviewScreen(nav: AiNav, plan: Plan) {
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            TextButton(onClick = { selectable.forEach { checked[it.actionId] = true } }) { Text("全选") }
-                            TextButton(onClick = { actions.forEach { checked[it.actionId] = false } }) { Text("全不选") }
+                            val allOn = selectable.isNotEmpty() && selectable.all { checked[it.actionId] == true }
+                            TextButton(onClick = {
+                                if (allOn) actions.forEach { checked[it.actionId] = false }
+                                else selectable.forEach { checked[it.actionId] = true }
+                            }) { Text(stringResource(if (allOn) R.string.aiflow_select_none else R.string.aiflow_select_all)) }
                             Spacer(Modifier.weight(1f))
-                            if (hasTrash) {
-                                HoldToConfirmButton(
-                                    text = "长按 1 秒执行",
-                                    enabled = chosen.isNotEmpty(),
-                                    onConfirm = ::execute,
+                            Button(
+                                onClick = { if (impact.needsConfirm) confirmOpen = true else execute() },
+                                enabled = chosen.isNotEmpty(),
+                                colors = if (impact.trashCount > 0) {
+                                    ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error,
+                                        contentColor = MaterialTheme.colorScheme.onError,
+                                    )
+                                } else {
+                                    ButtonDefaults.buttonColors()
+                                },
+                            ) {
+                                Text(
+                                    if (chosen.isEmpty()) stringResource(R.string.aiflow_choose_first)
+                                    else stringResource(R.string.aiflow_execute_n, chosen.size),
                                 )
-                            } else {
-                                Button(onClick = ::execute, enabled = chosen.isNotEmpty()) { Text("执行 ${chosen.size} 项") }
                             }
                         }
                     }
@@ -266,24 +311,13 @@ fun AiPlanReviewScreen(nav: AiNav, plan: Plan) {
                             onCheck = { id, v -> checked[id] = v },
                             isBlocked = ::isBlocked,
                             header = {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text(
-                                        "共 ${actions.size} 项，${formatMb(actions.sumOf { it.size })}",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        buildString {
-                                            append("已选 ${chosen.size} 项，${formatMb(chosenBytes)}")
-                                            val blocked = actions.count { isBlocked(it) }
-                                            if (blocked > 0) append(" · $blocked 项无法执行")
-                                            if (hasTrash) append(" · 删除只进回收站，可撤销")
-                                        },
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
+                                PlanImpactCard(
+                                    impact = impact,
+                                    totalCount = actions.size,
+                                    totalBytes = actions.sumOf { it.size },
+                                    blockedCount = actions.count { isBlocked(it) },
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                )
                             },
                         )
                     }
@@ -296,6 +330,8 @@ fun AiPlanReviewScreen(nav: AiNav, plan: Plan) {
                         ok = p.error == null && (p.progress?.failed ?: 0) == 0,
                         onUndo = ::undo,
                         onBack = nav.back,
+                        note = stringResource(R.string.aiflow_result_undo_hint),
+                        onHistory = { nav.open(AppScreen.AiHistory) },
                     )
                     is Phase.Undone -> ResultPane(
                         title = if (p.error == null) "已撤销本批" else "撤销未完全成功",
@@ -304,10 +340,23 @@ fun AiPlanReviewScreen(nav: AiNav, plan: Plan) {
                         ok = p.error == null,
                         onUndo = null,
                         onBack = nav.back,
+                        note = if (p.error != null) stringResource(R.string.aiflow_undo_partial_hint) else null,
+                        onHistory = { nav.open(AppScreen.AiHistory) },
                     )
                 }
             }
         }
+    }
+
+    if (confirmOpen) {
+        PlanConfirmDialog(
+            impact = impact,
+            onConfirm = {
+                confirmOpen = false
+                execute()
+            },
+            onDismiss = { confirmOpen = false },
+        )
     }
 
     suggestedRule?.let { rule ->
@@ -348,6 +397,7 @@ private fun ReviewList(
     header: @Composable () -> Unit,
 ) {
     val groups = remember(actions) { actions.groupBy { groupKeyOf(it) }.toList() }
+    val titles = groups.associate { (k, list) -> k to groupTitleOf(list.first()) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item(key = "summary") {
             header()
@@ -378,7 +428,7 @@ private fun ReviewList(
                         },
                     )
                     Column(Modifier.weight(1f)) {
-                        Text(group, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(titles[group] ?: group, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(
                             "${list.size} 项 · ${formatBytes(list.sumOf { it.size })}",
                             style = MaterialTheme.typography.bodySmall,
@@ -408,13 +458,13 @@ private fun ActionRow(
     blocked: Boolean,
     onCheck: (Boolean) -> Unit,
 ) {
-    val lowConfidence = a.confidence < 0.6f
+    val lowConfidence = a.confidence < PLAN_LOW_CONFIDENCE
     val bg = when {
         a.flagged -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
         lowConfidence -> LowConfidenceBg
         else -> Color.Transparent
     }
-    val (name, detail) = remember(a) { describe(a) }
+    val (name, fromLine, toLine) = describeLines(a)
     Row(
         Modifier
             .fillMaxWidth()
@@ -427,13 +477,24 @@ private fun ActionRow(
         Checkbox(checked = checked && !blocked, onCheckedChange = onCheck, enabled = !blocked)
         Column(Modifier.weight(1f).padding(top = 10.dp)) {
             Text(name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (fromLine != null) {
+                Text(
+                    fromLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (toLine != null) {
+                Text(
+                    toLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (a.type == ActionType.TRASH) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             val meta = buildString {
                 if (a.size > 0) append(formatBytes(a.size))
                 if (a.reason.isNotBlank()) {
@@ -444,11 +505,13 @@ private fun ActionRow(
             if (meta.isNotEmpty()) {
                 Text(meta, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-            Text(
-                "置信度 ${(a.confidence.coerceIn(0f, 1f) * 100).toInt()}%" + if (lowConfidence) "（较低，请确认）" else "",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (lowConfidence) LowConfidenceFg else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (a.confidence < 1f) {
+                Text(
+                    "置信度 ${(a.confidence.coerceIn(0f, 1f) * 100).toInt()}%" + if (lowConfidence) "（较低，请确认）" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (lowConfidence) LowConfidenceFg else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (a.flagged) {
                 Text(
                     "⚠ " + (a.flagReason ?: "需要特别留意，默认不勾选"),
@@ -508,6 +571,8 @@ private fun ResultPane(
     ok: Boolean,
     onUndo: (() -> Unit)?,
     onBack: () -> Unit,
+    note: String? = null,
+    onHistory: (() -> Unit)? = null,
 ) {
     Column(
         Modifier.fillMaxSize().padding(24.dp),
@@ -533,13 +598,29 @@ private fun ResultPane(
             Spacer(Modifier.height(6.dp))
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
+        if (!note.isNullOrBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
         Spacer(Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (onUndo != null) {
-                OutlinedButton(onClick = onUndo) { Text("撤销本批") }
+                FilledTonalButton(onClick = onUndo) {
+                    Icon(Icons.AutoMirrored.Outlined.Undo, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.aiflow_undo_this_batch))
+                }
             }
             Button(onClick = onBack) { Text("返回") }
         }
-        Spacer(Modifier.width(1.dp))
+        if (onHistory != null) {
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onHistory) { Text(stringResource(R.string.aiflow_open_history)) }
+        }
     }
 }

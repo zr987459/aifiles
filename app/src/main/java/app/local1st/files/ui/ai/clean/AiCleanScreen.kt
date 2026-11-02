@@ -3,6 +3,8 @@ package app.local1st.files.ui.ai.clean
 import android.os.Environment
 import android.os.StatFs
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.res.stringResource
+import app.local1st.files.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -244,7 +246,7 @@ fun AiCleanScreen(nav: AiNav) {
     var executing by remember { mutableStateOf(false) }
     var execProgress by remember { mutableStateOf<ExecProgress?>(null) }
     var execLabel by remember { mutableStateOf("") }
-    var pending by remember { mutableStateOf<Pair<List<CleanGroup>, Set<String>>?>(null) }
+    var pending by remember { mutableStateOf<PendingClean?>(null) }
 
     fun startIndex(full: Boolean) {
         scope.launch {
@@ -415,13 +417,21 @@ fun AiCleanScreen(nav: AiNav) {
         }
     }
 
-    fun requestTrash(snapshot: List<CleanGroup>, paths: Set<String>) {
+    /**
+     * 一键清理总是先确认；详情页里选了“建议确认”的条目、或数量/体积很大时也先确认。
+     * 只有少量、规则判定为安全的文件才直接移入回收站（之后仍可撤销）。
+     */
+    fun requestTrash(snapshot: List<CleanGroup>, paths: Set<String>, oneClick: Boolean = false) {
         if (paths.isEmpty() || executing) return
         val sizes = HashMap<String, Long>()
         snapshot.forEach { g -> cleanSelectable(g).forEach { sizes[it.path] = it.size } }
         val bytes = paths.sumOf { sizes[it] ?: 0L }
-        if (paths.size > CLEAN_CONFIRM_COUNT || bytes > CLEAN_CONFIRM_BYTES) pending = snapshot to paths
-        else runTrash(snapshot, paths)
+        val risky = cleanHasRisky(snapshot, paths)
+        if (oneClick || risky || paths.size > CLEAN_CONFIRM_COUNT || bytes > CLEAN_CONFIRM_BYTES) {
+            pending = PendingClean(snapshot, paths, oneClick, risky)
+        } else {
+            runTrash(snapshot, paths)
+        }
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -487,27 +497,34 @@ fun AiCleanScreen(nav: AiNav) {
                 dirsLoading = dirsLoading,
                 onFullScan = { startIndex(full = true) },
                 onRefresh = { scanToken++ },
-                onOneClick = { requestTrash(groups.filter { it.risk == Risk.SAFE }, safeSizes.keys.toSet()) },
+                onOneClick = { requestTrash(groups.filter { it.risk == Risk.SAFE }, safeSizes.keys.toSet(), oneClick = true) },
                 onOpenCard = { detailKey = it },
             )
         }
     }
 
-    pending?.let { (snap, paths) ->
-        val sizes = HashMap<String, Long>()
-        snap.forEach { g -> cleanSelectable(g).forEach { sizes[it.path] = it.size } }
-        val bytes = paths.sumOf { sizes[it] ?: 0L }
-        AlertDialog(
-            onDismissRequest = { pending = null },
-            title = { Text("确认移入回收站？") },
-            text = { Text("将把 ${paths.size} 项（共 ${cleanBytes(bytes)}）移入回收站。数量较多，请再确认一次；之后可以整批撤销。") },
-            confirmButton = {
-                TextButton(onClick = { pending = null; runTrash(snap, paths) }) { Text("移入回收站") }
+    pending?.let { pc ->
+        val rows = remember(pc) { cleanBreakdown(pc.snapshot, pc.paths) }
+        CleanConfirmDialog(
+            rows = rows,
+            risky = pc.risky,
+            oneClick = pc.oneClick,
+            onConfirm = {
+                pending = null
+                runTrash(pc.snapshot, pc.paths)
             },
-            dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } },
+            onDismiss = { pending = null },
         )
     }
 }
+
+/** 等待用户确认的一次清理。 */
+private data class PendingClean(
+    val snapshot: List<CleanGroup>,
+    val paths: Set<String>,
+    val oneClick: Boolean,
+    val risky: Boolean,
+)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -585,33 +602,23 @@ private fun OverviewScaffold(
                     onFullScan = onFullScan,
                 )
             }
-            if (scanning || scanError != null) {
-                item(key = "status") {
-                    Column(Modifier.fillMaxWidth()) {
-                        if (scanning) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                progressText.ifBlank { "正在分析…" },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        scanError?.let { err ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "分析出错：$err",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                TextButton(onClick = onRefresh) { Text("重试") }
-                            }
-                        }
-                    }
+            item(key = "status") {
+                val found = remember(cardGroups) {
+                    val items = cardGroups.values.flatten().filter { it.risk != Risk.KEEP }
+                        .flatMap { g -> g.items.filterNot { it.keep } }
+                        .distinctBy { it.path }
+                    items.size to items.sumOf { it.size }
                 }
+                CleanScanSteps(
+                    stats = stats,
+                    indexPercent = indexPercent(stats, storage?.first ?: 0L),
+                    analyzing = scanning,
+                    progressText = progressText,
+                    scanError = scanError,
+                    foundCount = found.first,
+                    foundBytes = found.second,
+                    onRetry = onRefresh,
+                )
             }
             CARD_ORDER.forEach { key ->
                 item(key = "card:$key") {
@@ -673,7 +680,7 @@ private fun StorageHero(
                 Spacer(Modifier.width(8.dp))
                 Text(
                     when {
-                        safeCount > 0 -> "一键清理 可释放 ${cleanBytes(safeBytes)}"
+                        safeCount > 0 -> stringResource(R.string.aiflow_oneclick_label, cleanBytes(safeBytes))
                         analyzing -> "正在计算可释放空间…"
                         else -> "暂无可安全清理的文件"
                     },
@@ -742,36 +749,15 @@ private fun StorageHero(
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    if (stats.scanning) {
-                        val pct = indexPercent(stats, used)
-                        Text(
-                            if (pct != null) "全盘扫描中 $pct%" else "全盘扫描中…",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        if (pct != null) {
-                            LinearProgressIndicator(
-                                progress = { pct / 100f },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            )
-                        } else {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
-                        }
-                        Text(
-                            stats.scanProgress,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    } else {
-                        Text(
-                            if (stats.totalFiles > 0) "已索引 ${stats.totalFiles} 个文件 · ${cleanBytes(stats.totalBytes)}"
-                            else "还没有扫描过，点“全盘扫描”开始",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        when {
+                            stats.scanning -> stringResource(R.string.aiflow_hero_scanning)
+                            stats.totalFiles > 0 -> "已索引 ${stats.totalFiles} 个文件 · ${cleanBytes(stats.totalBytes)}"
+                            else -> "还没有扫描过，点“全盘扫描”开始"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (stats.scanning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = onFullScan, enabled = !stats.scanning && !busy) {

@@ -1,6 +1,13 @@
 package app.local1st.files.ui.ai.views
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.outlined.Checklist
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
+import app.local1st.files.R
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -387,18 +394,6 @@ private fun Modifier.combinedClickableCompat(onClick: () -> Unit, onLongClick: (
 
 // ---------------------------------------------------------------- 文件列表
 
-private enum class SortOption(val label: String, val sort: app.local1st.files.ai.Sort) {
-    TIME("时间", app.local1st.files.ai.Sort.MTIME_DESC),
-    SIZE("大小", app.local1st.files.ai.Sort.SIZE_DESC),
-    NAME("名称", app.local1st.files.ai.Sort.NAME_ASC),
-}
-
-private fun initialSortOption(q: FileQuery): SortOption = when (q.sort) {
-    app.local1st.files.ai.Sort.SIZE_DESC -> SortOption.SIZE
-    app.local1st.files.ai.Sort.NAME_ASC -> SortOption.NAME
-    else -> SortOption.TIME
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FileListMode(
@@ -411,11 +406,14 @@ private fun FileListMode(
     refining: Boolean,
     onRefine: () -> Unit,
 ) {
-    var sortOpt by rememberSaveable { mutableStateOf(initialSortOption(baseQuery)) }
+    var sortOpt by rememberSaveable { mutableStateOf(AiSortOption.of(baseQuery.sort)) }
     var grid by rememberSaveable { mutableStateOf(baseQuery.categories.isNotEmpty() && baseQuery.categories.all { it == Category.IMAGE || it == Category.SCREENSHOT || it == Category.VIDEO }) }
     var localTick by remember { mutableIntStateOf(0) }
     var state by remember { mutableStateOf<LoadState<List<IndexedFile>>>(LoadState.Loading) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 选择模式：长按任一文件或点右上角“选择”进入；选空或按返回退出。
+    var selectMode by rememberSaveable { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
     var showMoveDialog by remember { mutableStateOf(false) }
 
     val stats by AiGraph.index.stats.collectAsState()
@@ -493,17 +491,31 @@ private fun FileListMode(
         !hasMore -> files.size to files.sumOf { it.size }
         else -> null
     }?.let { t -> if (t.first < files.size) files.size to files.sumOf { it.size } else t }
-    val selecting = selected.isNotEmpty()
+    val selecting = selectMode || selected.isNotEmpty()
     val selectedFiles = files.filter { it.path in selected }
+    val allSelected = files.isNotEmpty() && selected.size >= files.size
 
     fun toggle(path: String) {
         selected = if (path in selected) selected - path else selected + path
+        selectMode = selected.isNotEmpty()
+    }
+
+    fun startSelect(path: String) {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        toggle(path)
+    }
+
+    fun exitSelect() {
+        selected = emptySet()
+        selectMode = false
     }
 
     fun openPlan(plan: Plan) {
-        selected = emptySet()
+        exitSelect()
         nav.open(AppScreen.AiPlanReview(plan))
     }
+
+    BackHandler(enabled = selecting) { exitSelect() }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Scaffold(
@@ -511,25 +523,47 @@ private fun FileListMode(
                 TopAppBar(
                     title = {
                         Text(
-                            if (selecting) "已选 ${selected.size} 项" else title,
+                            when {
+                                selected.isNotEmpty() -> stringResource(R.string.aiflow_selected_count, selected.size)
+                                selecting -> stringResource(R.string.aiflow_select_files)
+                                else -> title
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     },
                     navigationIcon = {
                         if (selecting) {
-                            IconButton(onClick = { selected = emptySet() }) { Icon(Icons.Outlined.Close, "取消选择") }
+                            IconButton(onClick = ::exitSelect) {
+                                Icon(Icons.Outlined.Close, stringResource(R.string.aiflow_exit_select))
+                            }
                         } else {
                             IconButton(onClick = nav.back) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") }
                         }
                     },
                     actions = {
                         if (selecting) {
-                            IconButton(onClick = {
-                                selected = if (selected.size == files.size) emptySet() else files.mapTo(HashSet()) { it.path }
-                            }) { Icon(Icons.Outlined.SelectAll, "全选") }
+                            if (selectedFiles.size == 1) {
+                                IconButton(onClick = { nav.reveal(selectedFiles.first().path) }) {
+                                    Icon(Icons.Outlined.FolderOpen, stringResource(R.string.aiflow_reveal_in_folder))
+                                }
+                            }
+                            TextButton(onClick = {
+                                if (allSelected) exitSelect()
+                                else {
+                                    selected = files.mapTo(HashSet()) { it.path }
+                                    selectMode = true
+                                }
+                            }) {
+                                Text(stringResource(if (allSelected) R.string.aiflow_select_none else R.string.aiflow_select_all_loaded))
+                            }
                         } else {
                             RefineAction(llmReady, refining, onRefine)
+                            if (files.isNotEmpty()) {
+                                IconButton(onClick = { selectMode = true }) {
+                                    Icon(Icons.Outlined.Checklist, stringResource(R.string.aiflow_select))
+                                }
+                            }
                             IconButton(onClick = { grid = !grid }) {
                                 if (grid) Icon(Icons.AutoMirrored.Outlined.List, "列表")
                                 else Icon(Icons.Outlined.GridView, "网格")
@@ -547,6 +581,7 @@ private fun FileListMode(
                         ) {
                             OutlinedButton(
                                 onClick = { openPlan(buildTrashPlan(selectedFiles)) },
+                                enabled = selectedFiles.isNotEmpty(),
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Icon(Icons.Outlined.Delete, null, Modifier.size(18.dp))
@@ -555,6 +590,7 @@ private fun FileListMode(
                             }
                             FilledTonalButton(
                                 onClick = { showMoveDialog = true },
+                                enabled = selectedFiles.isNotEmpty(),
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Icon(Icons.Outlined.Folder, null, Modifier.size(18.dp))
@@ -567,27 +603,28 @@ private fun FileListMode(
             },
         ) { padding ->
             Column(Modifier.padding(padding).fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("排序", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    SortOption.entries.forEach { opt ->
-                        FilterChip(
-                            selected = sortOpt == opt,
-                            onClick = { sortOpt = opt },
-                            label = { Text(opt.label) },
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    if (files.isNotEmpty()) {
-                        Text(
-                            total?.let { "${it.first} 个 · ${formatBytes(it.second)}" } ?: "已加载 ${files.size} 个",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                AiSortChips(
+                    selected = sortOpt,
+                    onSelect = { sortOpt = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    trailing = if (files.isNotEmpty()) {
+                        {
+                            Text(
+                                total?.let { "${it.first} 个 · ${formatBytes(it.second)}" } ?: "已加载 ${files.size} 个",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    } else null,
+                )
+                if (files.isNotEmpty()) {
+                    Text(
+                        stringResource(if (selecting) R.string.aiflow_select_hint_active else R.string.aiflow_select_hint),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp),
+                    )
                 }
                 HorizontalDivider()
                 if (stats.scanning) {
@@ -621,8 +658,7 @@ private fun FileListMode(
                                 FileGridCell(
                                     f, selected = f.path in selected, selecting = selecting,
                                     onClick = { if (selecting) toggle(f.path) else nav.openInList(s.data, f.path) },
-                                    onSelect = { toggle(f.path) },
-                                    onReveal = { nav.reveal(f.path) },
+                                    onLongClick = { startSelect(f.path) },
                                 )
                             }
                             if (hasMore) {
@@ -635,8 +671,7 @@ private fun FileListMode(
                                 FileRow(
                                     f, selected = f.path in selected, selecting = selecting,
                                     onClick = { if (selecting) toggle(f.path) else nav.openInList(s.data, f.path) },
-                                    onSelect = { toggle(f.path) },
-                                    onReveal = { nav.reveal(f.path) },
+                                    onLongClick = { startSelect(f.path) },
                                 )
                             }
                             if (hasMore) item(key = "more") { LoadMoreFooter() }
@@ -752,30 +787,30 @@ private fun FileRow(
     selected: Boolean,
     selecting: Boolean,
     onClick: () -> Unit,
-    onSelect: () -> Unit,
-    onReveal: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
-    var menu by remember { mutableStateOf(false) }
-    Box {
-        ListItem(
-            headlineContent = { Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            supportingContent = {
-                Text(
-                    "${formatBytes(f.size)} · ${formatTime(f.mtime)}",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            },
-            leadingContent = {
+    ListItem(
+        headlineContent = { Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        supportingContent = {
+            Text(
+                "${formatBytes(f.size)} · ${formatTime(f.mtime)}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        leadingContent = {
+            Box {
                 Thumb(f, Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
-            },
-            trailingContent = {
-                if (selecting) Checkbox(checked = selected, onCheckedChange = { onSelect() })
-            },
-            modifier = Modifier.combinedClickableCompat(onClick = onClick, onLongClick = { menu = true }),
-        )
-        FileMenu(expanded = menu, onDismiss = { menu = false }, selected = selected, onSelect = onSelect, onReveal = onReveal)
-    }
+            }
+        },
+        trailingContent = {
+            if (selecting) Checkbox(checked = selected, onCheckedChange = { onClick() })
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        ),
+        modifier = Modifier.combinedClickableCompat(onClick = onClick, onLongClick = onLongClick),
+    )
 }
 
 @Composable
@@ -784,69 +819,28 @@ private fun FileGridCell(
     selected: Boolean,
     selecting: Boolean,
     onClick: () -> Unit,
-    onSelect: () -> Unit,
-    onReveal: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
-    var menu by remember { mutableStateOf(false) }
-    Box {
-        Column(
-            Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .combinedClickableCompat(onClick = onClick, onLongClick = { menu = true }),
-        ) {
-            Box {
-                Thumb(f, Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(12.dp)), iconSize = 36.dp)
-                if (!isVisual(f)) {
-                    Text(
-                        f.name,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .background(Color.Black.copy(alpha = 0.45f))
-                            .padding(horizontal = 6.dp, vertical = 3.dp),
-                    )
-                }
-                if (selecting) {
-                    Box(
-                        Modifier
-                            .matchParentSize()
-                            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.Transparent),
-                    )
-                    Icon(
-                        Icons.Outlined.CheckCircle,
-                        contentDescription = if (selected) "已选" else "未选",
-                        tint = if (selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(22.dp),
-                    )
-                }
-            }
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickableCompat(onClick = onClick, onLongClick = onLongClick),
+    ) {
+        Thumb(f, Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(12.dp)), iconSize = 36.dp)
+        if (!isVisual(f)) {
+            Text(
+                f.name,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
         }
-        FileMenu(expanded = menu, onDismiss = { menu = false }, selected = selected, onSelect = onSelect, onReveal = onReveal)
-    }
-}
-
-@Composable
-private fun FileMenu(
-    expanded: Boolean,
-    onDismiss: () -> Unit,
-    selected: Boolean,
-    onSelect: () -> Unit,
-    onReveal: () -> Unit,
-) {
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        DropdownMenuItem(
-            text = { Text("在文件夹中显示") },
-            leadingIcon = { Icon(Icons.Outlined.FolderOpen, null) },
-            onClick = { onDismiss(); onReveal() },
-        )
-        DropdownMenuItem(
-            text = { Text(if (selected) "取消选择" else "选择") },
-            leadingIcon = { Icon(Icons.Outlined.CheckCircle, null) },
-            onClick = { onDismiss(); onSelect() },
-        )
+        AiTileSelectionMark(selected = selected, visible = selecting)
     }
 }

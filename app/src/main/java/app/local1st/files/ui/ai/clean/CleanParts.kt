@@ -1,6 +1,15 @@
 package app.local1st.files.ui.ai.clean
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.res.stringResource
+import app.local1st.files.R
+import app.local1st.files.ui.ai.views.AiTileSelectionMark
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -112,11 +121,12 @@ internal fun CleanMediaTile(
     onReveal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 与智能分类网格一致：点按预览，长按选择；右上角的圈也可以直接点。
     Box(
         modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(10.dp))
-            .combinedClickable(onClick = onOpen, onLongClick = onReveal),
+            .combinedClickable(onClick = onOpen, onLongClick = if (selectable) onToggle else onReveal),
     ) {
         AiFileThumb(
             path = item.path,
@@ -127,12 +137,13 @@ internal fun CleanMediaTile(
         )
         if (item.keep) {
             CleanKeepBadge(Modifier.align(Alignment.TopStart).padding(4.dp))
-        } else {
-            Checkbox(
-                checked = checked && selectable,
-                onCheckedChange = { onToggle() },
-                enabled = selectable,
-                modifier = Modifier.align(Alignment.TopEnd),
+        } else if (selectable) {
+            AiTileSelectionMark(selected = checked)
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .size(44.dp)
+                    .clickable(onClick = onToggle),
             )
         }
     }
@@ -153,34 +164,38 @@ internal fun CleanDuplicateTile(
         Modifier
             .width(132.dp)
             .clip(RoundedCornerShape(10.dp))
-            .combinedClickable(onClick = onOpen, onLongClick = onReveal)
+            .combinedClickable(onClick = onOpen, onLongClick = if (selectable) onToggle else onReveal)
             .padding(4.dp),
     ) {
-        Box(Modifier.size(124.dp)) {
+        Box(Modifier.size(124.dp).clip(RoundedCornerShape(10.dp))) {
             AiFileThumb(
                 path = item.path,
                 mtime = item.mtime,
                 size = item.size,
                 isDir = item.isDir,
-                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
+                modifier = Modifier.fillMaxSize(),
             )
             if (item.keep) {
                 CleanKeepBadge(Modifier.align(Alignment.TopStart).padding(4.dp))
-            } else {
-                Checkbox(
-                    checked = checked && selectable,
-                    onCheckedChange = { onToggle() },
-                    enabled = selectable,
-                    modifier = Modifier.align(Alignment.TopEnd),
+            } else if (selectable) {
+                AiTileSelectionMark(selected = checked)
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .size(44.dp)
+                        .clickable(onClick = onToggle),
                 )
             }
         }
         Spacer(Modifier.height(4.dp))
+        // 所在文件夹：点一下在浏览器里定位，方便判断该留哪份。
         Text(
-            item.path.substringBeforeLast('/').substringAfterLast('/'),
+            "📁 " + item.path.substringBeforeLast('/').substringAfterLast('/'),
             style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.clickable(onClick = onReveal),
         )
         Text(
             item.path.substringAfterLast('/'),
@@ -212,7 +227,8 @@ internal fun CleanItemRow(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .combinedClickable(onClick = onOpen, onLongClick = onReveal)
+            .background(if (checked && selectable) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+            .combinedClickable(onClick = onOpen, onLongClick = if (selectable) onToggle else onReveal)
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -255,6 +271,13 @@ internal fun CleanItemRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+        IconButton(onClick = onReveal) {
+            Icon(
+                Icons.Outlined.FolderOpen,
+                stringResource(R.string.aiflow_reveal_in_folder),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -304,6 +327,12 @@ internal fun CleanTrashBar(
                 Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
                     Text(if (count == 0) "请选择要清理的文件" else "移入回收站 $count 项 · ${cleanBytes(bytes)}")
                 }
+                Text(
+                    stringResource(R.string.aiflow_trash_bar_note),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp),
+                )
             }
         }
     }

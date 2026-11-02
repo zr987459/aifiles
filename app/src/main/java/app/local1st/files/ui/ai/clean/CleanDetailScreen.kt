@@ -1,6 +1,12 @@
 package app.local1st.files.ui.ai.clean
 
 import androidx.compose.foundation.clickable
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.res.stringResource
+import app.local1st.files.R
+import app.local1st.files.ui.ai.views.AiSortChips
+import app.local1st.files.ui.ai.views.AiSortOption
+import app.local1st.files.ui.ai.views.sortedForAi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -88,6 +94,14 @@ internal fun CleanDetailScreen(
     val count = chosen.size
     val bytes = chosen.sumOf { sizes[it] ?: 0L }
     var limits by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    // 与智能分类列表同一套排序；重复文件组保持“保留的那份在前”，不参与排序。
+    var sortOpt by rememberSaveable { mutableStateOf(AiSortOption.SIZE) }
+    val sortedGroups = remember(groups, sortOpt) {
+        groups.map { g ->
+            if (g.kind == CleanKind.DUPLICATE) g
+            else g.copy(items = g.items.sortedForAi(sortOpt, { it.path.substringAfterLast('/') }, { it.size }, { it.mtime }))
+        }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -137,16 +151,29 @@ internal fun CleanDetailScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (description.isNotBlank()) {
-                item(key = "desc") {
+            item(key = "desc") {
+                Column {
+                    if (description.isNotBlank()) {
+                        Text(
+                            description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
-                        "$description。点按打开，长按在文件夹中定位。",
-                        style = MaterialTheme.typography.bodySmall,
+                        stringResource(R.string.aiflow_clean_detail_hint),
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    AiSortChips(
+                        selected = sortOpt,
+                        onSelect = { sortOpt = it },
+                        enabled = !executing,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     )
                 }
             }
-            groups.forEach { g ->
+            sortedGroups.forEach { g ->
                 val locked = g.risk == Risk.KEEP
                 val selectable = cleanSelectable(g)
                 val limit = limits[g.groupId] ?: PAGE

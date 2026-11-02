@@ -1,6 +1,11 @@
 package app.local1st.files.ui.dialogs
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -51,6 +57,7 @@ fun OpsHost() {
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 96.dp),
     ) {
+        DeleteUndoCard()
         jobs.forEach { job ->
             key(job.id) {
                 val progress by job.progress.collectAsState()
@@ -131,27 +138,41 @@ fun OpsHost() {
                     title = { Text(stringResource(R.string.name_conflict)) },
                     text = {
                         Column {
-                            Text(stringResource(R.string.already_exists, c.existingName))
+                            Text(stringResource(R.string.menu_conflict_body, c.existingName))
+                            Spacer(Modifier.height(12.dp))
+                            ConflictChoiceRow(
+                                label = stringResource(R.string.keep_both),
+                                hint = stringResource(R.string.menu_conflict_keep_both_sub),
+                            ) { op.resolveConflict(ConflictResolution(ConflictChoice.RENAME, applyToAll)) }
+                            ConflictChoiceRow(
+                                label = stringResource(R.string.skip),
+                                hint = stringResource(R.string.menu_conflict_skip_sub),
+                            ) { op.resolveConflict(ConflictResolution(ConflictChoice.SKIP, applyToAll)) }
+                            ConflictChoiceRow(
+                                label = stringResource(R.string.overwrite),
+                                hint = stringResource(R.string.menu_conflict_overwrite_sub),
+                                danger = true,
+                            ) { op.resolveConflict(ConflictResolution(ConflictChoice.OVERWRITE, applyToAll)) }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(top = 8.dp),
+                                modifier = Modifier
+                                    .padding(top = 8.dp)
+                                    .fillMaxWidth()
+                                    .toggleable(
+                                        value = applyToAll,
+                                        role = Role.Checkbox,
+                                        onValueChange = { applyToAll = it },
+                                    ),
                             ) {
-                                Checkbox(checked = applyToAll, onCheckedChange = { applyToAll = it })
+                                Checkbox(checked = applyToAll, onCheckedChange = null)
+                                Spacer(Modifier.width(8.dp))
                                 Text(stringResource(R.string.apply_to_all))
                             }
                         }
                     },
                     confirmButton = {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            TextButton(onClick = {
-                                op.resolveConflict(ConflictResolution(ConflictChoice.SKIP, applyToAll))
-                            }) { Text(stringResource(R.string.skip)) }
-                            TextButton(onClick = {
-                                op.resolveConflict(ConflictResolution(ConflictChoice.RENAME, applyToAll))
-                            }) { Text(stringResource(R.string.keep_both)) }
-                            Button(onClick = {
-                                op.resolveConflict(ConflictResolution(ConflictChoice.OVERWRITE, applyToAll))
-                            }) { Text(stringResource(R.string.overwrite)) }
+                        TextButton(onClick = { op.cancel() }) {
+                            Text(stringResource(R.string.cancel_operation))
                         }
                     },
                 )
@@ -159,5 +180,28 @@ fun OpsHost() {
             }
             }
         }
+    }
+}
+
+@Composable
+private fun ConflictChoiceRow(
+    label: String,
+    hint: String,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = 8.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.titleSmall, color = color)
+        Text(
+            hint,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings for the action menu and dialogs (ui/dialogs). -->
+<resources>
+    <string name="menu_copy_to_other_pane">复制到另一个窗格</string>
+    <string name="menu_move_to_other_pane">移动到另一个窗格</string>
+    <string name="menu_extract_to_other_pane">解压到另一个窗格</string>
+    <string name="menu_zip_to_other_pane">压缩到另一个窗格</string>
+    <string name="menu_target_other_pane">目标：%1$s</string>
+    <string name="menu_reason_no_other_pane">另一个窗格还没有打开文件夹</string>
+    <string name="menu_reason_other_pane_readonly">另一个窗格里的“%1$s”不能写入</string>
+    <string name="menu_pick_any_folder">自己选择目标文件夹</string>
+    <string name="menu_reason_read_only">只读，不能修改</string>
+    <string name="menu_reason_restore_first">在回收站里，需要先恢复</string>
+    <string name="menu_reason_not_local">只有存在本机上的文件才能交给其他应用</string>
+    <string name="menu_reason_install_not_local">只有存在本机上的安装包才能安装</string>
+    <string name="menu_delete_sub_bin">移到回收站，可以撤销</string>
+    <string name="menu_delete_sub_no_bin">这里不支持回收站，删除后无法恢复</string>
+    <string name="menu_delete_sub_in_bin">从回收站彻底删除，无法恢复</string>
+    <string name="menu_delete_forever_sub">不经过回收站，无法恢复</string>
+    <string name="menu_empty_bin_sub">彻底删除回收站里的全部内容</string>
+    <string name="menu_restore_sub">放回原来的位置</string>
+    <string name="menu_delete_title_trash">移到回收站？</string>
+    <string name="menu_delete_title_forever">永久删除？</string>
+    <string name="menu_delete_title_mixed">删除 %1$d 项？</string>
+    <string name="menu_delete_body_trash">之后可以在回收站里恢复，删除后也可以马上点“撤销”。</string>
+    <string name="menu_delete_body_forever">这些项目不会进入回收站，删除后无法找回。</string>
+    <string name="menu_delete_body_no_bin">这个位置不支持回收站，在这里删除就是永久删除，无法撤销。</string>
+    <string name="menu_delete_body_in_bin">将从回收站中彻底删除，删除后无法找回。</string>
+    <string name="menu_delete_body_mixed">其中 %1$d 项会移到回收站，可以恢复；另外 %2$d 项所在位置不支持回收站，会被永久删除。</string>
+    <string name="menu_delete_more">……还有 %1$d 项</string>
+    <string name="menu_delete_confirm_trash">移到回收站</string>
+    <string name="menu_undo_moved">已移到回收站：%1$d 项</string>
+    <string name="menu_undo">撤销</string>
+    <string name="menu_undo_failed">回收站里没找到这些项目，请打开回收站手动恢复。</string>
+    <string name="menu_conflict_body">目标文件夹里已经有“%1$s”，要怎么处理？</string>
+    <string name="menu_conflict_keep_both_sub">新复制的文件会自动在名字后加上编号</string>
+    <string name="menu_conflict_overwrite_sub">替换掉已有的那个</string>
+    <string name="menu_conflict_skip_sub">保留已有的，不复制这一个</string>
+    <string name="menu_picker_target">目标：%1$s</string>
+    <string name="menu_picker_hint_choose">请打开要放入的文件夹</string>
+    <string name="menu_picker_hint_readonly">这个文件夹不能写入，请换一个</string>
+    <string name="menu_picker_sources">%1$s 等，共 %2$d 项</string>
+    <string name="menu_name_invalid_slash">名称里不能有 / 或 \\</string>
+    <string name="menu_name_invalid_dots">不能用“.”或“..”作为名称</string>
+</resources>

@@ -209,8 +209,10 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                     snapshotFlow { pagerState.currentPage }.collect { vm.setActivePane(it) }
                 }
                 LaunchedEffect(activePane) {
-                    if (pagerState.currentPage != activePane &&
-                        !pagerState.isScrollInProgress
+                    // 竖屏已关闭手势滑动，翻页只来自这里：快速连点“切换”时上一段动画会被取消，
+                    // 停在两栏中间。所以只要没正好停在目标页就补一次滚动，不再因为“正在滚动”跳过。
+                    if (pagerState.currentPage != activePane ||
+                        pagerState.currentPageOffsetFraction != 0f
                     ) {
                         if (sessionReady) pagerState.animateScrollToPage(activePane)
                         else pagerState.scrollToPage(activePane)

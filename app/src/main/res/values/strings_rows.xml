@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">More actions</string>
+    <string name="rows_empty_folder">This folder is empty</string>
+    <string name="rows_loading">Loading…</string>
+    <string name="rows_load_failed">Couldn\'t open this folder</string>
+    <string name="rows_retry">Retry</string>
+    <string name="rows_show_full_path">Show the rest of the path</string>
+</resources>

@@ -70,6 +70,7 @@ import app.local1st.files.ui.components.TooltipIconButton
 import app.local1st.files.core.fs.addLocationGuideUrl
 import app.local1st.files.core.util.IntentUtils
 import app.local1st.files.ui.dialogs.LocationGuideDialog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -116,7 +117,9 @@ fun SettingsScreen(onBack: () -> Unit) {
             // merely opening Settings would otherwise pop the superuser prompt. Forcing SU is
             // the user explicitly asking for su, where probing (and its grant prompt) is the point.
             transportPref?.takeIf { rootEnabled }?.let {
-                PrivilegedAccess.activeFor(it, probeSu = it == TransportPref.SU)?.id
+                runCatching {
+                    PrivilegedAccess.activeFor(it, probeSu = it == TransportPref.SU)?.id
+                }.getOrNull()
             }
         }
     }
@@ -160,30 +163,30 @@ fun SettingsScreen(onBack: () -> Unit) {
                     .padding(padding)
                     .padding(horizontal = 16.dp),
             ) {
-                SectionHeader(stringResource(R.string.appearance))
-                RadioOptionsRow(
-                    title = stringResource(R.string.theme),
-                    options = listOf(
-                        ThemeMode.SYSTEM to stringResource(R.string.theme_system),
-                        ThemeMode.LIGHT to stringResource(R.string.theme_light),
-                        ThemeMode.DARK to stringResource(R.string.theme_dark),
-                    ),
-                    selected = themeMode,
-                    onSelect = { scope.launch { settings.setThemeMode(it) } },
-                )
-                SwitchRow(
-                    title = stringResource(R.string.dynamic_color),
-                    subtitle = stringResource(R.string.dynamic_color_summary),
-                    checked = dynamicColor,
-                    onCheckedChange = { scope.launch { settings.setDynamicColor(it) } },
-                )
-
-                SectionHeader(stringResource(R.string.browsing))
+                // Everyday list options come first: these are what people open Settings for.
+                SectionHeader(stringResource(R.string.ux_settings_group_files))
                 SwitchRow(
                     title = stringResource(R.string.show_hidden),
-                    subtitle = stringResource(R.string.show_hidden_summary),
+                    subtitle = stringResource(R.string.ux_settings_show_hidden_summary),
                     checked = showHidden,
                     onCheckedChange = { scope.launch { settings.setShowHidden(it) } },
+                )
+                RadioOptionsRow(
+                    title = stringResource(R.string.sort_by),
+                    options = listOf(
+                        SortBy.NAME to stringResource(R.string.sort_name),
+                        SortBy.SIZE to stringResource(R.string.sort_size),
+                        SortBy.DATE to stringResource(R.string.sort_date),
+                        SortBy.TYPE to stringResource(R.string.sort_type),
+                    ),
+                    selected = sortBy,
+                    onSelect = { scope.launch { settings.setSortBy(it) } },
+                )
+                SwitchRow(
+                    title = stringResource(R.string.ux_settings_descending),
+                    subtitle = stringResource(R.string.ux_settings_descending_summary),
+                    checked = sortDescending,
+                    onCheckedChange = { scope.launch { settings.setSortDescending(it) } },
                 )
                 SwitchRow(
                     title = stringResource(R.string.folders_first),
@@ -199,85 +202,41 @@ fun SettingsScreen(onBack: () -> Unit) {
                         scope.launch { settings.setCollapseSiblingFolders(it) }
                     },
                 )
+
+                SectionHeader(stringResource(R.string.appearance))
                 RadioOptionsRow(
-                    title = stringResource(R.string.sort_by),
+                    title = stringResource(R.string.theme),
                     options = listOf(
-                        SortBy.NAME to stringResource(R.string.sort_name),
-                        SortBy.SIZE to stringResource(R.string.sort_size),
-                        SortBy.DATE to stringResource(R.string.sort_date),
-                        SortBy.TYPE to stringResource(R.string.sort_type),
+                        ThemeMode.SYSTEM to stringResource(R.string.theme_system),
+                        ThemeMode.LIGHT to stringResource(R.string.theme_light),
+                        ThemeMode.DARK to stringResource(R.string.theme_dark),
                     ),
-                    selected = sortBy,
-                    onSelect = { scope.launch { settings.setSortBy(it) } },
+                    selected = themeMode,
+                    onSelect = { scope.launch { settings.setThemeMode(it) } },
                 )
                 SwitchRow(
-                    title = stringResource(R.string.descending),
-                    subtitle = stringResource(R.string.descending_summary),
-                    checked = sortDescending,
-                    onCheckedChange = { scope.launch { settings.setSortDescending(it) } },
+                    title = stringResource(R.string.ux_settings_dynamic_color),
+                    subtitle = stringResource(R.string.ux_settings_dynamic_color_summary),
+                    checked = dynamicColor,
+                    onCheckedChange = { scope.launch { settings.setDynamicColor(it) } },
                 )
 
-                SectionHeader(stringResource(R.string.locations))
-                Text(
-                    stringResource(R.string.locations_summary),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-                TextButton(
-                    onClick = { IntentUtils.openUrl(context, addLocationGuideUrl(context)) },
-                    modifier = Modifier.padding(horizontal = 4.dp),
-                ) {
-                    Text(stringResource(R.string.location_guide_open))
-                }
-                val locations by Graph.safLocations.collectAsState()
-                locations.orEmpty().forEach { location ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            location.displayName,
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(
-                            onClick = {
-                                scope.launch { Graph.locationActions.remove(location.id) }
-                            },
-                        ) {
-                            Text(stringResource(R.string.remove_location))
-                        }
-                    }
-                }
-                OutlinedButton(
-                    onClick = {
-                        if (locationGuideSeen) Graph.locationActions.requestPicker()
-                        else showLocationGuide = true
-                    },
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-                ) {
-                    Text(stringResource(R.string.add_location))
-                }
-
-                SectionHeader(stringResource(R.string.file_associations))
-                SwitchRow(
-                    title = stringResource(R.string.open_supported_archives_with_xfiles),
-                    subtitle = stringResource(R.string.supported_archives_summary),
-                    checked = archivesRegistered,
-                    onCheckedChange = {
-                        ExternalOpenRegistry.setEnabled(context, ExternalOpenKind.ARCHIVE, it)
-                        archivesRegistered = it
-                    },
-                )
+                SectionHeader(stringResource(R.string.ux_settings_group_open_with))
+                SectionNote(stringResource(R.string.ux_settings_open_with_summary))
                 SwitchRow(
                     title = stringResource(R.string.view_images_with_xfiles),
                     checked = imagesRegistered,
                     onCheckedChange = {
                         ExternalOpenRegistry.setEnabled(context, ExternalOpenKind.IMAGE, it)
                         imagesRegistered = it
+                    },
+                )
+                SwitchRow(
+                    title = stringResource(R.string.play_videos_with_xfiles),
+                    checked = videosRegistered,
+                    onCheckedChange = {
+                        ExternalOpenRegistry.setEnabled(context, ExternalOpenKind.VIDEO, it)
+                        videosRegistered = it
                     },
                 )
                 SwitchRow(
@@ -297,45 +256,99 @@ fun SettingsScreen(onBack: () -> Unit) {
                     },
                 )
                 SwitchRow(
-                    title = stringResource(R.string.play_videos_with_xfiles),
-                    checked = videosRegistered,
+                    title = stringResource(R.string.open_supported_archives_with_xfiles),
+                    subtitle = stringResource(R.string.supported_archives_summary),
+                    checked = archivesRegistered,
                     onCheckedChange = {
-                        ExternalOpenRegistry.setEnabled(context, ExternalOpenKind.VIDEO, it)
-                        videosRegistered = it
+                        ExternalOpenRegistry.setEnabled(context, ExternalOpenKind.ARCHIVE, it)
+                        archivesRegistered = it
                     },
                 )
 
-                SectionHeader(stringResource(R.string.root))
+                SectionHeader(stringResource(R.string.ux_settings_group_network))
+                SectionNote(stringResource(R.string.locations_summary))
+                TextButton(
+                    onClick = { IntentUtils.openUrl(context, addLocationGuideUrl(context)) },
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                ) {
+                    Text(stringResource(R.string.location_guide_open))
+                }
+                val locations by Graph.safLocations.collectAsState()
+                val removeFailed = stringResource(R.string.ux_settings_remove_location_failed)
+                locations.orEmpty().forEach { location ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            location.displayName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    try {
+                                        Graph.locationActions.remove(location.id)
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, removeFailed, Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                        ) {
+                            Text(stringResource(R.string.remove_location))
+                        }
+                    }
+                }
+                OutlinedButton(
+                    onClick = {
+                        if (locationGuideSeen) Graph.locationActions.requestPicker()
+                        else showLocationGuide = true
+                    },
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    Text(stringResource(R.string.ux_settings_add_network_folder))
+                }
+
+                // Root and Shizuku are for a small group of users; keep them last and explain
+                // them in plain words.
+                SectionHeader(stringResource(R.string.ux_settings_group_system))
+                SectionNote(stringResource(R.string.ux_settings_system_intro))
                 SwitchRow(
-                    title = stringResource(R.string.root_access),
-                    subtitle = stringResource(R.string.root_access_summary),
+                    title = stringResource(R.string.ux_settings_system_access),
+                    subtitle = stringResource(R.string.ux_settings_system_access_summary),
                     checked = rootEnabled,
                     onCheckedChange = { scope.launch { settings.setRootEnabled(it) } },
                 )
                 if (rootEnabled) {
                     SwitchRow(
-                        title = stringResource(R.string.read_only),
-                        subtitle = stringResource(R.string.read_only_summary),
+                        title = stringResource(R.string.ux_settings_read_only),
+                        subtitle = stringResource(R.string.ux_settings_read_only_summary),
                         checked = rootReadOnly,
                         onCheckedChange = { scope.launch { settings.setRootReadOnly(it) } },
                     )
                 }
                 RadioOptionsRow(
-                    title = stringResource(R.string.transport),
+                    title = stringResource(R.string.ux_settings_access_method),
                     options = listOf(
-                        TransportPref.AUTO to stringResource(R.string.transport_auto),
-                        TransportPref.SU to stringResource(R.string.transport_su),
-                        TransportPref.SHIZUKU to stringResource(R.string.shizuku),
-                        TransportPref.OFF to stringResource(R.string.transport_off),
+                        TransportPref.AUTO to stringResource(R.string.ux_settings_method_auto),
+                        TransportPref.SU to stringResource(R.string.ux_settings_method_su),
+                        TransportPref.SHIZUKU to stringResource(R.string.ux_settings_method_shizuku),
+                        TransportPref.OFF to stringResource(R.string.ux_settings_method_off),
                     ),
                     selected = transportPref ?: TransportPref.AUTO,
                     onSelect = { scope.launch { settings.setPrivilegedTransport(it) } },
                 )
+                SectionNote(stringResource(R.string.ux_settings_method_summary))
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text(
                             stringResource(
-                                R.string.transport_status,
+                                R.string.ux_settings_access_status,
                                 stringResource(activeTransportLabelRes(activeTransport)),
                                 stringResource(shizukuStateLabelRes(shizukuState)),
                             ),
@@ -379,7 +392,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Column(Modifier.padding(16.dp)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
-                                "XFiles",
+                                stringResource(R.string.app_name),
                                 style = MaterialTheme.typography.titleMedium,
                                 modifier = Modifier.alignByBaseline(),
                             )
@@ -442,9 +455,9 @@ fun SettingsScreen(onBack: () -> Unit) {
 
 @StringRes
 private fun activeTransportLabelRes(transport: TransportId?): Int = when (transport) {
-    TransportId.SU -> R.string.transport_su
-    TransportId.SHIZUKU -> R.string.shizuku
-    null -> R.string.transport_none
+    TransportId.SU -> R.string.ux_settings_method_su
+    TransportId.SHIZUKU -> R.string.ux_settings_method_shizuku
+    null -> R.string.ux_settings_access_none
 }
 
 @StringRes
@@ -515,6 +528,16 @@ private fun <T> Flow<T>.collectSetting(initial: T): T {
     val current by collectAsState(initial = saved)
     SideEffect { saved = current }
     return current
+}
+
+@Composable
+private fun SectionNote(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+    )
 }
 
 @Composable

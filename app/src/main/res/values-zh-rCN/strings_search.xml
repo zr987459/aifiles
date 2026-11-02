@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Search and settings screen texts (UX pass 1). Keys must match across locales. -->
+<resources>
+    <string name="ux_search_hint">搜索文件和文件夹</string>
+    <string name="ux_search_idle_hint">输入名称开始搜索。中文输入 1 个字就行，字母和数字至少 2 个。\n也可以只选一个类型，列出这里所有同类文件。</string>
+    <string name="ux_search_type_all">全部</string>
+    <string name="ux_search_type_folder">文件夹</string>
+    <string name="ux_search_type_image">图片</string>
+    <string name="ux_search_type_video">视频</string>
+    <string name="ux_search_type_audio">音频</string>
+    <string name="ux_search_type_document">文档</string>
+    <string name="ux_search_type_archive">压缩包</string>
+    <string name="ux_search_type_apk">安装包</string>
+    <string name="ux_search_scope_here_and_below">当前文件夹（含子文件夹）</string>
+    <string name="ux_search_scope_here_only">仅当前文件夹</string>
+    <string name="ux_search_scope_storage">整个存储空间</string>
+    <string name="ux_search_scope_label">搜索位置：%1$s</string>
+    <string name="ux_search_failed">搜索没能完成，可能有些文件夹无法读取。换个位置再试试。</string>
+    <string name="ux_search_too_many">结果太多，只显示前 %1$d 个。输入更完整的名称可以缩小范围。</string>
+    <string name="ux_search_no_results">没有找到“%1$s”</string>
+    <string name="ux_search_no_results_tip">试试更短的关键词，或换个类型。</string>
+    <string name="ux_search_no_results_tip_storage">试试更短的关键词，或把范围改成“整个存储空间”。</string>
+    <string name="ux_search_no_type_results">这里没有这类文件。</string>
+    <string name="ux_search_show_in_folder">在文件夹中显示</string>
+    <string name="ux_settings_group_files">文件列表</string>
+    <string name="ux_settings_show_hidden_summary">名称以“.”开头的文件，以及系统隐藏的文件夹</string>
+    <string name="ux_settings_descending">倒序排列</string>
+    <string name="ux_settings_descending_summary">例如 Z 到 A、从大到小、从新到旧</string>
+    <string name="ux_settings_dynamic_color">跟随壁纸配色</string>
+    <string name="ux_settings_dynamic_color_summary">用壁纸里的颜色给界面上色（Android 12 及以上）</string>
+    <string name="ux_settings_group_open_with">从其他应用打开文件</string>
+    <string name="ux_settings_open_with_summary">开启后，在其他应用里打开这些文件时，可以选择用 AI 文件 打开。</string>
+    <string name="ux_settings_group_network">网络文件夹</string>
+    <string name="ux_settings_add_network_folder">添加网络文件夹</string>
+    <string name="ux_settings_remove_location_failed">没能移除，请稍后再试。</string>
+    <string name="ux_settings_group_system">高级：系统文件访问</string>
+    <string name="ux_settings_system_intro">一般用不到。开启后可以查看 Android/data 这类受保护的目录，已 Root 的手机还能查看系统文件。</string>
+    <string name="ux_settings_system_access">访问受保护的文件</string>
+    <string name="ux_settings_system_access_summary">会在首页多显示一个入口。需要手机已 Root，或安装了 Shizuku 应用。</string>
+    <string name="ux_settings_read_only">只看不改（推荐）</string>
+    <string name="ux_settings_read_only_summary">受保护的文件只能查看，不能修改或删除</string>
+    <string name="ux_settings_access_method">获取权限的方式</string>
+    <string name="ux_settings_method_auto">自动选择</string>
+    <string name="ux_settings_method_su">Root 权限</string>
+    <string name="ux_settings_method_shizuku">Shizuku</string>
+    <string name="ux_settings_method_off">不使用</string>
+    <string name="ux_settings_method_summary">Shizuku 是一个免费应用，手机不用 Root 也能授权。</string>
+    <string name="ux_settings_access_status">正在使用：%1$s · Shizuku：%2$s</string>
+    <string name="ux_settings_access_none">无</string>
+</resources>

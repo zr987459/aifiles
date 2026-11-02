@@ -25,7 +25,10 @@ class DefaultSearchEngine(
     private val volumeRoots: () -> List<String> = { emptyList() },
 ) : SearchEngine {
 
-    override fun search(root: XEntry, query: String): Flow<SearchHit> = flow {
+    override fun search(root: XEntry, query: String): Flow<SearchHit> =
+        search(root, query, SearchOptions())
+
+    override fun search(root: XEntry, query: String, options: SearchOptions): Flow<SearchHit> = flow {
         val matcher = buildMatcher(query)
         val rootPath = root.localPath ?: root.path
         // One mount read for the whole walk. A pending snapshot scans StorageManager,
@@ -59,13 +62,17 @@ class DefaultSearchEngine(
             for (child in children) {
                 if (++visited > MAX_VISITED) return@flow
                 if (isDeniedPath(child, allowBin, roots)) continue
+                if (!options.includeHidden && isHidden(child)) continue
 
-                if (matcher(child.name)) {
+                if (matcher(child.name) && options.type.matches(child)) {
                     emit(SearchHit(entry = child, parentId = dir.id))
                     if (++hits >= MAX_HITS) return@flow
                 }
 
-                if (shouldDescend(child, allowBin, roots) && visitedContainers.add(child.id)) {
+                if (options.recursive &&
+                    shouldDescend(child, allowBin, roots) &&
+                    visitedContainers.add(child.id)
+                ) {
                     descend.add(child)
                 }
             }
@@ -98,8 +105,14 @@ class DefaultSearchEngine(
         return DENIED_PREFIXES.any { path == it || path.startsWith("$it/") }
     }
 
-    /** Substring match, or whole-name wildcard match when the query contains '*' / '?'. */
+    private fun isHidden(entry: XEntry): Boolean = entry.hidden || entry.name.startsWith('.')
+
+    /**
+     * Substring match, or whole-name wildcard match when the query contains '*' / '?'.
+     * An empty query matches every name (used to list everything of one type).
+     */
     private fun buildMatcher(query: String): (String) -> Boolean {
+        if (query.isEmpty()) return { true }
         if ('*' !in query && '?' !in query) {
             return { name -> name.contains(query, ignoreCase = true) }
         }
@@ -117,7 +130,7 @@ class DefaultSearchEngine(
     }
 
     private companion object {
-        const val MAX_HITS = 500
+        const val MAX_HITS = SEARCH_MAX_HITS
         const val MAX_VISITED = 50_000
         const val MAX_ARCHIVE_BYTES = 100L * 1024 * 1024
         val DENIED_PREFIXES = listOf("/proc", "/sys", "/dev")

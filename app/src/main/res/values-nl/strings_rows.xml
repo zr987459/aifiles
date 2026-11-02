@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Meer acties</string>
+    <string name="rows_empty_folder">Deze map is leeg</string>
+    <string name="rows_loading">Laden…</string>
+    <string name="rows_load_failed">Kan deze map niet openen</string>
+    <string name="rows_retry">Opnieuw proberen</string>
+    <string name="rows_show_full_path">Rest van het pad tonen</string>
+</resources>

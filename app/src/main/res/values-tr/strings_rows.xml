@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Diğer işlemler</string>
+    <string name="rows_empty_folder">Bu klasör boş</string>
+    <string name="rows_loading">Yükleniyor…</string>
+    <string name="rows_load_failed">Bu klasör açılamadı</string>
+    <string name="rows_retry">Yeniden dene</string>
+    <string name="rows_show_full_path">Yolun geri kalanını göster</string>
+</resources>

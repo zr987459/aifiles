@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">और कार्रवाइयां</string>
+    <string name="rows_empty_folder">यह फ़ोल्डर खाली है</string>
+    <string name="rows_loading">लोड हो रहा है…</string>
+    <string name="rows_load_failed">यह फ़ोल्डर नहीं खुल सका</string>
+    <string name="rows_retry">फिर से कोशिश करें</string>
+    <string name="rows_show_full_path">बाकी पथ दिखाएं</string>
+</resources>

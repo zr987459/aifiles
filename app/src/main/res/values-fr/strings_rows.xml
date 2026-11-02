@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Plus d\'actions</string>
+    <string name="rows_empty_folder">Ce dossier est vide</string>
+    <string name="rows_loading">Chargement…</string>
+    <string name="rows_load_failed">Impossible d\'ouvrir ce dossier</string>
+    <string name="rows_retry">Réessayer</string>
+    <string name="rows_show_full_path">Afficher le reste du chemin</string>
+</resources>

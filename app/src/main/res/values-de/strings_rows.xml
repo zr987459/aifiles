@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Weitere Aktionen</string>
+    <string name="rows_empty_folder">Dieser Ordner ist leer</string>
+    <string name="rows_loading">Wird geladen…</string>
+    <string name="rows_load_failed">Ordner konnte nicht geöffnet werden</string>
+    <string name="rows_retry">Wiederholen</string>
+    <string name="rows_show_full_path">Restlichen Pfad anzeigen</string>
+</resources>

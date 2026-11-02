@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="rows_more_actions">Thao tác khác</string>
+    <string name="rows_empty_folder">Thư mục này trống</string>
+    <string name="rows_loading">Đang tải…</string>
+    <string name="rows_load_failed">Không thể mở thư mục này</string>
+    <string name="rows_retry">Thử lại</string>
+    <string name="rows_show_full_path">Hiển thị phần còn lại của đường dẫn</string>
+</resources>

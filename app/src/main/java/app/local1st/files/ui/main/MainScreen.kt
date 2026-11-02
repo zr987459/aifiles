@@ -1,6 +1,5 @@
 package app.local1st.files.ui.main
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -31,6 +30,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBackIos
 import androidx.compose.material.icons.automirrored.outlined.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.automirrored.outlined.NoteAdd
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -41,8 +41,11 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
@@ -153,9 +156,8 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
         unavailableDestinationLabel
     }
 
-    BackHandler(enabled = selectionCount > 0) {
-        vm.activeCtrl.clearSelection()
-    }
+    // 返回键（取消选择 → 逐级收起 → AI 首页）统一由 AppHost 的 RootBackHandler 处理：
+    // 这里不再单独注册，避免浏览器被隐藏组合在 AI 首页下面时抢走首页的返回键。
 
     // No top app bar at all: the panes extend under the status bar, and the few former
     // top-bar actions live elsewhere (search in the bottom toolbar, Settings in More).
@@ -207,8 +209,10 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                     snapshotFlow { pagerState.currentPage }.collect { vm.setActivePane(it) }
                 }
                 LaunchedEffect(activePane) {
-                    if (pagerState.currentPage != activePane &&
-                        !pagerState.isScrollInProgress
+                    // 竖屏已关闭手势滑动，翻页只来自这里：快速连点“切换”时上一段动画会被取消，
+                    // 停在两栏中间。所以只要没正好停在目标页就补一次滚动，不再因为“正在滚动”跳过。
+                    if (pagerState.currentPage != activePane ||
+                        pagerState.currentPageOffsetFraction != 0f
                     ) {
                         if (sessionReady) pagerState.animateScrollToPage(activePane)
                         else pagerState.scrollToPage(activePane)
@@ -216,6 +220,9 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 }
                 HorizontalPager(
                     state = pagerState,
+                    // 竖屏双栏不再靠左右滑动切换（列表里横向手势很容易误触），
+                    // 改用顶部目标栏标签或底部工具栏的“切换”按钮。
+                    userScrollEnabled = false,
                     // The inactive pane's data restores off the critical path, but composing its
                     // full tree here would still charge that work to phone startup. Pager will
                     // compose it naturally when the user begins to swipe toward it.
@@ -353,25 +360,44 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                                 enabled = canShareSelection,
                             ) { vm.shareSelection() }
                         } else {
-                            TooltipIconButton(stringResource(R.string.new_folder), Icons.Outlined.CreateNewFolder) {
-                                vm.requestNewFolder()
+                            if (wideLayout) {
+                                TooltipIconButton(stringResource(R.string.new_folder), Icons.Outlined.CreateNewFolder) {
+                                    vm.requestNewFolder()
+                                }
+                                TooltipIconButton(
+                                    stringResource(R.string.new_text_file),
+                                    Icons.AutoMirrored.Outlined.NoteAdd,
+                                ) {
+                                    vm.requestNewTextFile()
+                                }
+                            } else {
+                                // 手机上把两个“新建”合成一个菜单，腾出位置给显式的切换栏按钮。
+                                NewEntryMenuButton(
+                                    onNewFolder = { vm.requestNewFolder() },
+                                    onNewTextFile = { vm.requestNewTextFile() },
+                                )
                             }
                             TooltipIconButton(
-                                stringResource(R.string.new_text_file),
-                                Icons.AutoMirrored.Outlined.NoteAdd,
-                            ) {
-                                vm.requestNewTextFile()
-                            }
-                            TooltipIconButton(
-                                "AI 首页",
+                                stringResource(R.string.nav_ai_home),
                                 Icons.Outlined.AutoAwesome,
-                                onClick = dropUnlessResumed { vm.openAi() },
+                                onClick = dropUnlessResumed { vm.openAi(AppScreen.AiHome) },
                             )
                             TooltipIconButton(
                                 stringResource(R.string.search),
                                 Icons.Outlined.Search,
                                 onClick = dropUnlessResumed { vm.openSearch() },
                             )
+                            if (!wideLayout) {
+                                TooltipIconButton(
+                                    stringResource(
+                                        if (activePane == 0) R.string.nav_switch_to_right_pane
+                                        else R.string.nav_switch_to_left_pane,
+                                    ),
+                                    Icons.Outlined.SwapHoriz,
+                                ) {
+                                    vm.setActivePane(1 - activePane)
+                                }
+                            }
                             TooltipIconButton(stringResource(R.string.refresh), Icons.Outlined.Refresh) {
                                 vm.activeCtrl.refreshAllExpanded()
                             }
@@ -411,6 +437,36 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                     LoadingIndicator()
                 }
             }
+        }
+    }
+}
+
+/** 手机工具栏上的“新建”按钮：点开后选新建文件夹或文本文件。 */
+@Composable
+private fun NewEntryMenuButton(
+    onNewFolder: () -> Unit,
+    onNewTextFile: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        TooltipIconButton(stringResource(R.string.nav_new), Icons.Outlined.Add) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.new_folder)) },
+                leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+                onClick = {
+                    open = false
+                    onNewFolder()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.new_text_file)) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Outlined.NoteAdd, contentDescription = null) },
+                onClick = {
+                    open = false
+                    onNewTextFile()
+                },
+            )
         }
     }
 }

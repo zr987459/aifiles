@@ -1,6 +1,15 @@
 package app.local1st.files.ui.ai.history
 
 import android.text.format.Formatter
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.ui.res.stringResource
+import app.local1st.files.R
+import app.local1st.files.ui.ai.views.prettyPath
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -159,6 +168,12 @@ fun AiHistoryScreen(nav: AiNav) {
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    val undoTitle = stringResource(R.string.aiflow_history_undo_confirm_title)
+    // 带 %1$s / %2$d 的模板：点按时再填入，避免在列表里为每条记录各取一次。
+    val undoMessage = stringResource(R.string.aiflow_history_undo_confirm_message_tpl)
+    val undoLabel = stringResource(R.string.aiflow_history_undo)
+    val undoingTitle = stringResource(R.string.aiflow_history_undoing_tpl)
+    val untitled = stringResource(R.string.aiflow_history_untitled)
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Scaffold(
@@ -228,6 +243,9 @@ fun AiHistoryScreen(nav: AiNav) {
                         }
                     }
 
+                    if (state.history.any { it.status == PlanStatus.DONE || it.status == PlanStatus.PARTIAL }) {
+                        item(key = "undo-intro") { UndoIntroCard() }
+                    }
                     item(key = "history-header") { SectionHeader("历史记录") }
                     if (state.history.isEmpty()) {
                         item(key = "empty") {
@@ -259,10 +277,10 @@ fun AiHistoryScreen(nav: AiNav) {
                                 onRetryDetail = { loadDetail(rec.planId) },
                                 onUndo = {
                                     confirm = PendingConfirm(
-                                        title = "撤销本批？",
-                                        message = "将把「${rec.title}」的 ${rec.done} 项操作还原到执行前的位置。",
-                                        confirmLabel = "撤销",
-                                        run = { runOp("正在撤销「${rec.title}」") { executor.undo(rec.planId) } },
+                                        title = undoTitle,
+                                        message = undoMessage.format(rec.title.ifBlank { untitled }, rec.done),
+                                        confirmLabel = undoLabel,
+                                        run = { runOp(undoingTitle.format(rec.title.ifBlank { untitled })) { executor.undo(rec.planId) } },
                                     )
                                 },
                             )
@@ -386,9 +404,28 @@ private fun RecordCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (record.status == PlanStatus.DONE || record.status == PlanStatus.PARTIAL) {
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = onUndo, enabled = !busy) { Text("撤销本批") }
+            if (record.status == PlanStatus.UNDONE) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    stringResource(R.string.aiflow_history_undone_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (record.status == PlanStatus.DONE || record.status == PlanStatus.PARTIAL) {
+                    FilledTonalButton(onClick = onUndo, enabled = !busy) {
+                        Icon(Icons.AutoMirrored.Outlined.Undo, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.aiflow_history_undo_batch))
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onToggle) {
+                    Text(stringResource(if (expanded) R.string.aiflow_history_hide_detail else R.string.aiflow_history_show_detail))
+                    Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, Modifier.size(18.dp))
+                }
             }
             if (expanded) {
                 Spacer(Modifier.height(8.dp))
@@ -440,14 +477,30 @@ private fun ActionRow(action: PlanAction) {
     val src = action.srcPath.orEmpty()
     val srcName = src.substringAfterLast('/')
     val line = when (action.type) {
-        ActionType.MOVE -> "移动 $srcName → ${action.destDir.orEmpty()}" +
-            (action.destName?.takeIf { it != srcName }?.let { "/$it" } ?: "")
-        ActionType.RENAME -> "重命名 $srcName → ${action.destName.orEmpty()}"
-        ActionType.MKDIR -> "新建文件夹 ${action.destDir.orEmpty()}"
-        ActionType.TRASH -> "移入回收站 $srcName"
+        ActionType.MOVE -> stringResource(
+            R.string.aiflow_history_line_move,
+            srcName,
+            prettyPath(action.destDir.orEmpty().trimEnd('/')) +
+                (action.destName?.takeIf { it != srcName }?.let { "/$it" } ?: ""),
+        )
+        ActionType.RENAME -> stringResource(R.string.aiflow_history_line_rename, srcName, action.destName.orEmpty())
+        ActionType.MKDIR -> stringResource(R.string.aiflow_history_line_mkdir, prettyPath(action.destDir.orEmpty()))
+        ActionType.TRASH -> stringResource(R.string.aiflow_history_line_trash, srcName)
     }
+    val from = if (action.type == ActionType.MOVE || action.type == ActionType.TRASH) {
+        src.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }?.let { stringResource(R.string.aiflow_line_from, prettyPath(it)) }
+    } else null
     Column {
         Text(line, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (from != null) {
+            Text(
+                from,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         val meta = buildList {
             if (action.size > 0) add(Formatter.formatShortFileSize(context, action.size))
             if (action.reason.isNotBlank()) add(action.reason)
@@ -470,7 +523,15 @@ private fun ProgressDialog(op: OpState, onClose: () -> Unit) {
     val p = op.progress
     AlertDialog(
         onDismissRequest = { if (op.finished) onClose() },
-        title = { Text(if (op.finished) "已结束" else op.title) },
+        title = {
+            Text(
+                when {
+                    !op.finished -> op.title
+                    op.error == null && (p?.failed ?: 0) == 0 -> stringResource(R.string.aiflow_history_op_ok)
+                    else -> stringResource(R.string.aiflow_history_op_partial)
+                },
+            )
+        },
         text = {
             Column {
                 if (!op.finished) {
@@ -501,8 +562,16 @@ private fun ProgressDialog(op: OpState, onClose: () -> Unit) {
                 if (op.error != null) {
                     Spacer(Modifier.height(8.dp))
                     Text("出错：${op.error}", color = MaterialTheme.colorScheme.error)
+                    if (op.finished) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            stringResource(R.string.aiflow_undo_partial_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 } else if (op.finished) {
-                    Text("操作完成。")
+                    Text(stringResource(R.string.aiflow_history_op_done_detail))
                 }
             }
         },
@@ -510,6 +579,38 @@ private fun ProgressDialog(op: OpState, onClose: () -> Unit) {
             if (op.finished) TextButton(onClick = onClose) { Text("关闭") }
         },
     )
+}
+
+/** 历史页顶部的说明：撤销会做什么。 */
+@Composable
+private fun UndoIntroCard() {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
+            Icon(
+                Icons.AutoMirrored.Outlined.Undo,
+                null,
+                Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    stringResource(R.string.aiflow_history_intro_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    stringResource(R.string.aiflow_undo_explain),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+    }
 }
 
 @Composable

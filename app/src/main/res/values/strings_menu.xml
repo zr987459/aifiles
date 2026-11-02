@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings for the action menu and dialogs (ui/dialogs). -->
+<resources>
+    <string name="menu_copy_to_other_pane">Copy to other pane</string>
+    <string name="menu_move_to_other_pane">Move to other pane</string>
+    <string name="menu_extract_to_other_pane">Extract to other pane</string>
+    <string name="menu_zip_to_other_pane">Zip to other pane</string>
+    <string name="menu_target_other_pane">Into: %1$s</string>
+    <string name="menu_reason_no_other_pane">The other pane has no folder open</string>
+    <string name="menu_reason_other_pane_readonly">Can\'t write to %1$s in the other pane</string>
+    <string name="menu_pick_any_folder">Choose the folder yourself</string>
+    <string name="menu_reason_read_only">Read-only, can\'t be changed</string>
+    <string name="menu_reason_restore_first">In the Recycle Bin. Restore it first</string>
+    <string name="menu_reason_not_local">Only files on this device can be opened in other apps</string>
+    <string name="menu_reason_install_not_local">Only packages on this device can be installed</string>
+    <string name="menu_delete_sub_bin">Moves to the Recycle Bin, you can undo</string>
+    <string name="menu_delete_sub_no_bin">No Recycle Bin here. Deleted for good</string>
+    <string name="menu_delete_sub_in_bin">Removes it from the Recycle Bin for good</string>
+    <string name="menu_delete_forever_sub">Skips the Recycle Bin. Can\'t be undone</string>
+    <string name="menu_empty_bin_sub">Deletes everything in the Recycle Bin for good</string>
+    <string name="menu_restore_sub">Puts it back where it was</string>
+    <string name="menu_delete_title_trash">Move to Recycle Bin?</string>
+    <string name="menu_delete_title_forever">Delete permanently?</string>
+    <string name="menu_delete_title_mixed">Delete %1$d items?</string>
+    <string name="menu_delete_body_trash">You can restore them from the Recycle Bin later, or tap Undo right after.</string>
+    <string name="menu_delete_body_forever">They won\'t go to the Recycle Bin and can\'t be recovered.</string>
+    <string name="menu_delete_body_no_bin">This location has no Recycle Bin, so deleting here is permanent and can\'t be undone.</string>
+    <string name="menu_delete_body_mixed">%1$d of them go to the Recycle Bin and can be restored. The other %2$d are in places without a Recycle Bin and will be deleted permanently.</string>
+    <string name="menu_delete_more">…and %1$d more</string>
+    <string name="menu_delete_confirm_trash">Move to Recycle Bin</string>
+    <string name="menu_undo_moved">Moved to the Recycle Bin: %1$d</string>
+    <string name="menu_undo">Undo</string>
+    <string name="menu_undo_failed">Couldn\'t find them in the Recycle Bin. Open the Recycle Bin to restore them.</string>
+    <string name="menu_conflict_body">“%1$s” is already in the destination folder. What should happen to it?</string>
+    <string name="menu_conflict_keep_both_sub">The new copy gets a number added to its name</string>
+    <string name="menu_conflict_overwrite_sub">Replaces the existing one</string>
+    <string name="menu_conflict_skip_sub">Leaves the existing one as is</string>
+    <string name="menu_picker_target">Destination: %1$s</string>
+    <string name="menu_picker_hint_choose">Open the folder you want to put them in</string>
+    <string name="menu_picker_hint_readonly">This folder can\'t be written to. Choose another one</string>
+    <string name="menu_picker_sources">%1$s and others, %2$d in total</string>
+    <string name="menu_name_invalid_slash">Names can\'t contain / or \\</string>
+    <string name="menu_name_invalid_dots">“.” and “..” can\'t be used as names</string>
+</resources>

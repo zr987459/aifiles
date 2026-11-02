@@ -93,7 +93,8 @@ fun DestinationPickerScreen(
     var nameDialog by remember { mutableStateOf(false) }
     var listedId by remember(t) { mutableStateOf<String?>(null) }
     var hasListing by remember(t) { mutableStateOf(false) }
-    val volumeRoots = Graph.roots.mountedVolumes.collectAsStateWithLifecycle().value.map { it.path }
+    val mountedVolumes = Graph.roots.mountedVolumes.collectAsStateWithLifecycle().value
+    val volumeRoots = mountedVolumes.map { it.path }
     val volumeEpoch by Graph.roots.volumeEpoch.collectAsStateWithLifecycle()
     val binTitle = stringResource(R.string.recycle_bin)
 
@@ -171,10 +172,19 @@ fun DestinationPickerScreen(
                             if (t.move) stringResource(R.string.move_to_title)
                             else stringResource(R.string.copy_to_title),
                         )
+                        // Name what is being copied, not just how many.
+                        val firstName = t.sources.firstOrNull()?.name.orEmpty()
                         Text(
-                            pluralStringResource(R.plurals.item_count_plural, t.sources.size, t.sources.size),
+                            when {
+                                t.sources.size == 1 -> firstName
+                                t.sources.size > 1 ->
+                                    stringResource(R.string.menu_picker_sources, firstName, t.sources.size)
+                                else -> pluralStringResource(R.plurals.item_count_plural, 0, 0)
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 },
@@ -198,8 +208,11 @@ fun DestinationPickerScreen(
                     ),
             ) {
                 Text(
-                    current?.let { pickerPathLabel(it, volumeRoots, binTitle) }
-                        ?: stringResource(R.string.this_device),
+                    stringResource(
+                        R.string.menu_picker_target,
+                        current?.let { friendlyLocation(it, mountedVolumes, binTitle) }
+                            ?: stringResource(R.string.this_device),
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
@@ -251,6 +264,18 @@ fun DestinationPickerScreen(
                 }
 
                 HorizontalDivider()
+                // Explain a disabled confirm button instead of leaving it silently grey.
+                if (!loading && !canConfirm) {
+                    Text(
+                        stringResource(
+                            if (current == null) R.string.menu_picker_hint_choose
+                            else R.string.menu_picker_hint_readonly,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp),
+                    )
+                }
                 Row(
                     Modifier.fillMaxWidth().padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),

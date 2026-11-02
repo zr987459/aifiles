@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings for the action menu and dialogs (ui/dialogs). -->
+<resources>
+    <string name="menu_copy_to_other_pane">複製到另一個窗格</string>
+    <string name="menu_move_to_other_pane">移動到另一個窗格</string>
+    <string name="menu_extract_to_other_pane">解壓縮到另一個窗格</string>
+    <string name="menu_zip_to_other_pane">壓縮到另一個窗格</string>
+    <string name="menu_target_other_pane">目標：%1$s</string>
+    <string name="menu_reason_no_other_pane">另一個窗格還沒有開啟資料夾</string>
+    <string name="menu_reason_other_pane_readonly">另一個窗格中的「%1$s」無法寫入</string>
+    <string name="menu_pick_any_folder">自行選擇目標資料夾</string>
+    <string name="menu_reason_read_only">唯讀，無法修改</string>
+    <string name="menu_reason_restore_first">在資源回收筒中，需要先還原</string>
+    <string name="menu_reason_not_local">只有存在本機上的檔案才能交給其他應用程式</string>
+    <string name="menu_reason_install_not_local">只有存在本機上的安裝檔才能安裝</string>
+    <string name="menu_delete_sub_bin">移到資源回收筒，可以復原</string>
+    <string name="menu_delete_sub_no_bin">這裡不支援資源回收筒，刪除後無法復原</string>
+    <string name="menu_delete_sub_in_bin">從資源回收筒徹底刪除，無法復原</string>
+    <string name="menu_delete_forever_sub">不經過資源回收筒，無法復原</string>
+    <string name="menu_empty_bin_sub">徹底刪除資源回收筒中的全部內容</string>
+    <string name="menu_restore_sub">放回原本的位置</string>
+    <string name="menu_delete_title_trash">移到資源回收筒？</string>
+    <string name="menu_delete_title_forever">永久刪除？</string>
+    <string name="menu_delete_title_mixed">刪除 %1$d 個項目？</string>
+    <string name="menu_delete_body_trash">之後可以在資源回收筒中還原，刪除後也可以馬上點「復原」。</string>
+    <string name="menu_delete_body_forever">這些項目不會進入資源回收筒，刪除後無法找回。</string>
+    <string name="menu_delete_body_no_bin">這個位置不支援資源回收筒，在這裡刪除就是永久刪除，無法復原。</string>
+    <string name="menu_delete_body_mixed">其中 %1$d 個項目會移到資源回收筒，可以還原；另外 %2$d 個項目所在位置不支援資源回收筒，會被永久刪除。</string>
+    <string name="menu_delete_more">……還有 %1$d 個項目</string>
+    <string name="menu_delete_confirm_trash">移到資源回收筒</string>
+    <string name="menu_undo_moved">已移到資源回收筒：%1$d 個項目</string>
+    <string name="menu_undo">復原</string>
+    <string name="menu_undo_failed">資源回收筒中找不到這些項目，請開啟資源回收筒手動還原。</string>
+    <string name="menu_conflict_body">目標資料夾中已經有「%1$s」，要如何處理？</string>
+    <string name="menu_conflict_keep_both_sub">新複製的檔案會自動在名稱後加上編號</string>
+    <string name="menu_conflict_overwrite_sub">取代現有的那個</string>
+    <string name="menu_conflict_skip_sub">保留現有的，不複製這一個</string>
+    <string name="menu_picker_target">目標：%1$s</string>
+    <string name="menu_picker_hint_choose">請開啟要放入的資料夾</string>
+    <string name="menu_picker_hint_readonly">這個資料夾無法寫入，請換一個</string>
+    <string name="menu_picker_sources">%1$s 等，共 %2$d 個項目</string>
+    <string name="menu_name_invalid_slash">名稱中不能有 / 或 \\</string>
+    <string name="menu_name_invalid_dots">不能用「.」或「..」作為名稱</string>
+</resources>

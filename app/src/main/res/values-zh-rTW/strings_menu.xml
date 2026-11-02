@@ -25,6 +25,7 @@
     <string name="menu_delete_body_trash">之後可以在資源回收筒中還原，刪除後也可以馬上點「復原」。</string>
     <string name="menu_delete_body_forever">這些項目不會進入資源回收筒，刪除後無法找回。</string>
     <string name="menu_delete_body_no_bin">這個位置不支援資源回收筒，在這裡刪除就是永久刪除，無法復原。</string>
+    <string name="menu_delete_body_in_bin">將從資源回收筒中永久刪除，刪除後無法復原。</string>
     <string name="menu_delete_body_mixed">其中 %1$d 個項目會移到資源回收筒，可以還原；另外 %2$d 個項目所在位置不支援資源回收筒，會被永久刪除。</string>
     <string name="menu_delete_more">……還有 %1$d 個項目</string>
     <string name="menu_delete_confirm_trash">移到資源回收筒</string>

@@ -25,6 +25,7 @@
     <string name="menu_delete_body_trash">You can restore them from the Recycle Bin later, or tap Undo right after.</string>
     <string name="menu_delete_body_forever">They won\'t go to the Recycle Bin and can\'t be recovered.</string>
     <string name="menu_delete_body_no_bin">This location has no Recycle Bin, so deleting here is permanent and can\'t be undone.</string>
+    <string name="menu_delete_body_in_bin">They\'ll be removed from the Recycle Bin for good and can\'t be recovered.</string>
     <string name="menu_delete_body_mixed">%1$d of them go to the Recycle Bin and can be restored. The other %2$d are in places without a Recycle Bin and will be deleted permanently.</string>
     <string name="menu_delete_more">…and %1$d more</string>
     <string name="menu_delete_confirm_trash">Move to Recycle Bin</string>

@@ -25,6 +25,7 @@
     <string name="menu_delete_body_trash">之后可以在回收站里恢复，删除后也可以马上点“撤销”。</string>
     <string name="menu_delete_body_forever">这些项目不会进入回收站，删除后无法找回。</string>
     <string name="menu_delete_body_no_bin">这个位置不支持回收站，在这里删除就是永久删除，无法撤销。</string>
+    <string name="menu_delete_body_in_bin">将从回收站中彻底删除，删除后无法找回。</string>
     <string name="menu_delete_body_mixed">其中 %1$d 项会移到回收站，可以恢复；另外 %2$d 项所在位置不支持回收站，会被永久删除。</string>
     <string name="menu_delete_more">……还有 %1$d 项</string>
     <string name="menu_delete_confirm_trash">移到回收站</string>

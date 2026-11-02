@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -28,6 +29,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.local1st.files.R
 import app.local1st.files.core.fs.DeleteDisposition
+import app.local1st.files.core.fs.TrashPaths
+import app.local1st.files.core.fs.XId
+import app.local1st.files.di.Graph
 import app.local1st.files.ui.browser.EntryIcon
 
 private const val SHOWN_NAMES = 5
@@ -49,6 +53,11 @@ internal fun ConfirmDeleteDialog(
         DeleteDisposition.MIXED -> req.entries.count { it.id in req.trashableIds }
     }
     val permanent = req.mode == DeleteDisposition.PERMANENT
+    // Items already in the Recycle Bin are deleted for good, but not because "there is no bin".
+    val volumeRoots = Graph.roots.mountedVolumes.collectAsState().value.map { it.path }
+    val inBinCount = req.entries.count {
+        it.scheme == XId.SCHEME_FILE && TrashPaths.isInsideVolumeBin(it.localPath ?: it.path, volumeRoots)
+    }
     val title = when (req.mode) {
         DeleteDisposition.TRASH -> stringResource(R.string.menu_delete_title_trash)
         DeleteDisposition.PERMANENT -> stringResource(R.string.menu_delete_title_forever)
@@ -57,10 +66,11 @@ internal fun ConfirmDeleteDialog(
     val body = when (req.mode) {
         DeleteDisposition.TRASH -> stringResource(R.string.menu_delete_body_trash)
         DeleteDisposition.PERMANENT ->
-            if (req.explicitPermanent) {
-                stringResource(R.string.menu_delete_body_forever)
-            } else {
-                stringResource(R.string.menu_delete_body_no_bin)
+            when {
+                req.explicitPermanent -> stringResource(R.string.menu_delete_body_forever)
+                inBinCount == total -> stringResource(R.string.menu_delete_body_in_bin)
+                inBinCount > 0 -> stringResource(R.string.menu_delete_body_forever)
+                else -> stringResource(R.string.menu_delete_body_no_bin)
             }
         DeleteDisposition.MIXED ->
             stringResource(R.string.menu_delete_body_mixed, binCount, total - binCount)

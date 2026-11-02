@@ -49,6 +49,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -87,12 +88,16 @@ import app.local1st.files.ui.main.MainViewModel
 import app.local1st.files.ui.navigationBarsStable
 import app.local1st.files.ui.statusBarsStable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val DEBOUNCE_MS = 300L
 
@@ -229,9 +234,11 @@ fun SearchScreen(
 
     val bottomSafe = WindowInsets.ime.union(WindowInsets.navigationBarsStable)
 
+    val openScope = rememberCoroutineScope()
+
     fun openHit(entry: XEntry) {
         keyboard?.hide()
-        openSearchHit(vm, entry)
+        openSearchHit(vm, entry, openScope)
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -404,13 +411,13 @@ fun SearchScreen(
  * A tap opens the result itself: folders and archives open in the browser, files open in
  * their viewer on top of the results so Back returns here.
  */
-private fun openSearchHit(vm: MainViewModel, entry: XEntry) {
+private fun openSearchHit(vm: MainViewModel, entry: XEntry, scope: CoroutineScope) {
     if (entry.isContainer) {
         vm.revealSearchHit(entry.id)
         vm.activeCtrl.expand(entry)
         return
     }
-    val category = runCatching { FileTypes.categoryOf(entry.name, entry.mime ?: FileTypes.mimeOf(entry.name)) }
+    val category = runCatching { FileTypes.categoryOf(entry.name, entry.mime) }
         .getOrDefault(FileCategory.GENERIC)
     val needsBrowser = entry.kind == EntryKind.APP_COMPONENT ||
         category == FileCategory.APK ||
@@ -419,10 +426,34 @@ private fun openSearchHit(vm: MainViewModel, entry: XEntry) {
         // These open an action menu that lives on the browser screen.
         vm.revealSearchHit(entry.id)
         vm.openEntry(vm.activeCtrl, entry)
-    } else {
-        vm.openEntry(vm.activeCtrl, entry)
+        return
+    }
+    val ctrl = vm.activeCtrl
+    val usesPaneSiblings = entry.scheme != XId.SCHEME_SAF && category in MEDIA_CATEGORIES
+    if (!usesPaneSiblings || ctrl.siblings(entry, category).any { it.id == entry.id }) {
+        vm.openEntry(ctrl, entry)
+        return
+    }
+    // The image / media viewers take their list from the pane's cached folder listing. A
+    // listing read before this file appeared would open a different photo (or "cannot play"),
+    // so re-read that folder first and open only once the hit is in it.
+    XId.parent(entry.id)?.let { ctrl.refresh(it) }
+    scope.launch {
+        val listed = withTimeoutOrNull(STALE_LISTING_WAIT_MS) {
+            while (ctrl.siblings(entry, category).none { it.id == entry.id }) delay(50)
+            true
+        } == true
+        when {
+            listed -> vm.openEntry(ctrl, entry)
+            // Still not listed: open just this file from its path, never a neighbour.
+            entry.scheme == XId.SCHEME_FILE -> vm.openPath(entry.path)
+            else -> vm.openEntry(ctrl, entry)
+        }
     }
 }
+
+private val MEDIA_CATEGORIES = setOf(FileCategory.IMAGE, FileCategory.AUDIO, FileCategory.VIDEO)
+private const val STALE_LISTING_WAIT_MS = 1_500L
 
 @Composable
 private fun ChipRow(content: @Composable () -> Unit) {
